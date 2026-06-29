@@ -118,6 +118,14 @@ def display_s2(label: str) -> str:
     return S2_DISPLAY.get(label, label)
 
 
+def display_diagnosis(raw_label: str) -> str:
+    """Convert a raw data label (IDA/HGB_HTZ/NORMAL/...) to its display form."""
+    if raw_label in DIAGNOSIS_TO_S2:
+        internal = DIAGNOSIS_TO_S2[raw_label]
+        return S2_DISPLAY.get(internal, internal)
+    return raw_label
+
+
 # ── Feature derivation (mirrors m4_e2e.compute_missing_ratios) ──
 def compute_missing_ratios(df: pd.DataFrame, feat_names: list[str]) -> pd.DataFrame:
     """Compute any '<num>_div_<den>' feature the model expects from raw columns."""
