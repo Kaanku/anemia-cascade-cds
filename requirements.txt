@@ -1,14 +1,7 @@
-# Anemia Cascade CDS — app runtime dependencies
-# AutoGluon must match the version the frozen models were trained with.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 autogluon.tabular==1.5.0
-
-# Base-model backends required to load the WeightedEnsemble predictors.
-lightgbm
-catboost
-xgboost
-fastai
-
-# App + data handling
+torch
 streamlit>=1.30
 pandas>=2.0
 numpy>=1.24
