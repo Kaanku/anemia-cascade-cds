@@ -1,338 +1,399 @@
 """
-Anemia Cascade CDS — Streamlit demo app.
+cascade_engine.py — Two-stage anemia cascade inference.
 
-Two-stage clinical decision support for anemia subtype classification.
-Run locally or on Streamlit Community Cloud:
+Pure-logic module (no Streamlit). Loads the deployment AutoGluon predictors,
+derives ratio features from raw input, runs the Stage 1 -> Stage 2 cascade,
+assigns confidence zones, builds conformal prediction sets, and looks up
+reflex-test recommendations.
 
-    streamlit run app/streamlit_app.py
-
-Models (deploy_models/) and assets (app/assets/) are loaded from the repo.
-No real patient data ships with the app — the demo data is anonymized or
-synthetic. This tool is for research demonstration only and is not a
-medical device.
+Internal class codes (DAS/IAS, DEA) are preserved exactly as the models were
+trained. Display labels (OAC/AAC, IDA, HGB HTZ) are applied only at the
+presentation boundary via DISPLAY_*.
 """
 from __future__ import annotations
-import sys
+import json
 from pathlib import Path
+from functools import lru_cache
 
+import numpy as np
 import pandas as pd
-import streamlit as st
+import joblib
 
-APP_DIR = Path(__file__).parent
-ROOT = APP_DIR.parent
-sys.path.insert(0, str(APP_DIR))
-from cascade_engine import (  # noqa: E402
-    CascadeEngine, display_s2, clinical_narrative, S2_CLASSES, S1_CLASSES,
-)
+# ── Display mappings (presentation only — never feed back into models) ──
+S1_DISPLAY = {"IAS": "AAC", "DAS": "OAC"}
+S2_DISPLAY = {"DEA": "IDA", "HA": "HA", "HGB HTZ": "HGB HTZ", "Normal": "Normal"}
+# class code (index) -> internal label
+S1_CLASSES = {0: "DAS", 1: "IAS"}
+S2_CLASSES = {0: "DEA", 1: "HA", 2: "HGB HTZ", 3: "Normal"}
+# raw label in demo data -> internal S2 code label
+DIAGNOSIS_TO_S2 = {"IDA": "DEA", "HA": "HA", "HGB_HTZ": "HGB HTZ", "NORMAL": "Normal"}
 
-MODELS_DIR = ROOT / "deploy_models"
-ASSETS_DIR = APP_DIR / "assets"
-DEMO_DIR = ASSETS_DIR / "demo_data"
-
-# ── Raw input fields (label, unit, default, min, max, step) ──
-CBC_FIELDS = [
-    ("yas", "Age", "years", 45, 0, 120, 1),
-    ("hgb_g_d_l", "Hemoglobin (HGB)", "g/dL", 11.2, 2.0, 22.0, 0.1),
-    ("rbc_10_6_u_l", "RBC count", "10⁶/µL", 4.35, 1.0, 8.0, 0.01),
-    ("mcv_f_l", "MCV", "fL", 78.5, 40.0, 130.0, 0.1),
-    ("mchc_g_dl", "MCHC", "g/dL", 32.1, 24.0, 40.0, 0.1),
-    ("rdw_sd_fl", "RDW-SD", "fL", 48.0, 25.0, 110.0, 0.1),
-    ("ret_he_pg", "RET-He", "pg", 28.4, 10.0, 50.0, 0.1),
-    ("delta_he_pg", "Delta-He", "pg", -2.1, -15.0, 15.0, 0.1),
-    ("ret_number_10_6_l", "Reticulocyte # (RET#)", "10⁶/L", 0.045, 0.0, 0.5, 0.001),
-    ("irf_pct", "IRF", "%", 9.8, 0.0, 60.0, 0.1),
-    ("frc_perc", "FRC", "%", 0.6, 0.0, 10.0, 0.1),
-    ("nrbc_pct", "NRBC", "%", 0.0, 0.0, 10.0, 0.1),
-    ("micro_macro_ratio", "Micro/Macro ratio", "ratio", 1.85, 0.0, 100.0, 0.01),
-]
-BIO_FIELDS = [
-    ("ferritin", "Ferritin", "ng/mL", 18.0, 0.0, 2000.0, 1.0),
-    ("demir", "Serum iron", "µg/dL", 42.0, 0.0, 500.0, 1.0),
-    ("ldh", "LD", "U/L", 210.0, 0.0, 2000.0, 1.0),
-    ("uibc", "UIBC", "µg/dL", 310.0, 0.0, 600.0, 1.0),
-]
-
-ZONE_STYLE = {
-    "HIGH":     ("#1B998B", "Automatable — high confidence"),
-    "MEDIUM":   ("#E8A33D", "Technician review — moderate confidence"),
-    "LOW":      ("#C0392B", "Expert review — low confidence"),
-    "Excluded": ("#6B7280", "Not an associated anemia cause"),
+SCENARIOS = {
+    "CBC_Only": {"s1": "s1_cbc", "s2": "s2_cbc"},
+    "CBC_BIO":  {"s1": "s1_bio", "s2": "s2_bio"},
 }
-URGENCY_STYLE = {"urgent": "#C0392B", "routine": "#1B6FB0", "none": "#6B7280"}
+
+# Feature display names for SHAP panel (mirrors m5_shap.FEATURE_DISPLAY)
+FEATURE_DISPLAY = {
+    "mcv_f_l": "MCV", "ret_he_pg": "Ret-He", "rbc_10_6_u_l": "RBC",
+    "ret_number_10_6_l": "RET#", "rdw_sd_fl": "RDW-SD", "delta_he_pg": "Delta-He",
+    "frc_perc": "FRC", "mchc_g_dl": "MCHC", "irf_pct": "IRF", "nrbc_pct": "NRBC",
+    "hgb_g_d_l": "HGB", "micro_macro_ratio": "MicroR/MacroR", "yas": "Age",
+    "ferritin": "Ferritin", "demir": "Iron", "ldh": "LD", "uibc": "UIBC",
+    "hgb_g_d_l_div_mcv_f_l": "HGB/MCV", "hgb_g_d_l_div_ret_he_pg": "HGB/Ret-He",
+    "rbc_10_6_u_l_div_mcv_f_l": "RBC/MCV", "rbc_10_6_u_l_div_ret_he_pg": "RBC/Ret-He",
+    "irf_pct_div_micro_macro_ratio": "IRF/(MicroR/MacroR)",
+    "hgb_g_d_l_div_rdw_sd_fl": "HGB/RDW-SD", "rbc_10_6_u_l_div_rdw_sd_fl": "RBC/RDW-SD",
+    "hgb_g_d_l_div_mchc_g_dl": "HGB/MCHC", "mcv_f_l_div_rdw_sd_fl": "MCV/RDW-SD",
+    "rdw_sd_fl_div_micro_macro_ratio": "RDW-SD/(MicroR/MacroR)",
+    "ret_he_pg_div_micro_macro_ratio": "Ret-He/(MicroR/MacroR)",
+    "ret_number_10_6_l_div_ret_he_pg": "RET#/Ret-He",
+    "mchc_g_dl_div_rdw_sd_fl": "MCHC/RDW-SD",
+    "mcv_f_l_div_micro_macro_ratio": "MCV/(MicroR/MacroR)",
+    "hgb_g_d_l_div_rbc_10_6_u_l": "HGB/RBC", "ret_number_10_6_l_div_mcv_f_l": "RET#/MCV",
+    "ret_number_10_6_l_div_mchc_g_dl": "RET#/MCHC",
+    "rbc_10_6_u_l_div_mchc_g_dl": "RBC/MCHC", "rdw_sd_fl_div_ferritin": "RDW-SD/Ferritin",
+    "mchc_g_dl_div_ferritin": "MCHC/Ferritin", "mcv_f_l_div_ferritin": "MCV/Ferritin",
+    "rbc_10_6_u_l_div_ferritin": "RBC/Ferritin", "ret_he_pg_div_ferritin": "Ret-He/Ferritin",
+    "hgb_g_d_l_div_ferritin": "HGB/Ferritin", "ret_he_pg_div_demir": "Ret-He/Iron",
+    "mcv_f_l_div_demir": "MCV/Iron", "mchc_g_dl_div_demir": "MCHC/Iron",
+    "rdw_sd_fl_div_demir": "RDW-SD/Iron", "rbc_10_6_u_l_div_demir": "RBC/Iron",
+    "hgb_g_d_l_div_demir": "HGB/Iron", "ferritin_div_uibc": "Ferritin/UIBC",
+    "demir_div_uibc": "Iron/UIBC", "ldh_div_uibc": "LD/UIBC", "demir_div_ldh": "Iron/LD",
+}
 
 
-@st.cache_resource(show_spinner="Loading models…")
-def get_engine() -> CascadeEngine:
-    return CascadeEngine(MODELS_DIR, ASSETS_DIR)
+def feat_display(name: str) -> str:
+    return FEATURE_DISPLAY.get(name, name)
 
 
-@st.cache_data
-def load_demo(split: str, kind: str) -> pd.DataFrame:
-    return pd.read_csv(DEMO_DIR / f"{split}_{kind}.csv")
+# Clinical narrative templates (condensed from m8_cds_report.NARRATIVE_TEMPLATES)
+def clinical_narrative(result: dict) -> str:
+    fin = result["final"]
+    zone = fin["zone"]
+    label = fin["label_display"]
+    escalated = result["escalated"]
+    s1_zone = "HIGH" if not escalated else result.get("stage2", {}).get("zone", "")
+
+    if zone == "Excluded":
+        return (f"[{label}] — Classified as Other Anemia Cause at Stage 1. "
+                "The four-subtype model is not applied; further non-anemia "
+                "workup (e.g. chronic disease, B12/folate, renal causes) is "
+                "indicated.")
+    if zone == "LOW":
+        return (f"[{label}] — Classified in the low-confidence zone. The model "
+                "prediction alone is insufficient; expert hematology "
+                "consultation is recommended.")
+    if escalated and result["final"]["tier"] == 2 and zone == "HIGH":
+        return (f"[{label}] — Initially classified with moderate confidence "
+                "(CBC only); confidence improved to HIGH after biochemistry was "
+                "added. The cascade demonstrates the selective biochemistry "
+                "strategy.")
+    if zone == "MEDIUM":
+        return (f"[{label}] — Moderate confidence after the available panel. "
+                "Expert review and additional clinical information are "
+                "recommended.")
+    # HIGH at tier 1 — class-specific
+    by_class = {
+        "IDA": "CBC profile shows strong concordance with iron deficiency "
+               "anemia. Ferritin confirmation is recommended.",
+        "HA": "CBC parameters show strong concordance with hemolytic anemia; "
+              "reticulocyte and hemolysis markers support this classification.",
+        "HGB HTZ": "CBC profile is consistent with heterozygous "
+                   "hemoglobinopathy. Hemoglobin electrophoresis is recommended "
+                   "for definitive diagnosis.",
+        "Normal": "CBC parameters are within normal limits; no anemia subtype "
+                  "detected. Additional biochemical workup is unlikely to be "
+                  "needed.",
+    }
+    tail = by_class.get(label, "Classified with high confidence.")
+    return f"[{label}] — {tail}"
 
 
-def zone_badge(zone: str) -> str:
-    color, label = ZONE_STYLE.get(zone, ("#6B7280", zone))
-    return (
-        f"<span style='background:{color};color:#fff;padding:3px 12px;"
-        f"border-radius:14px;font-weight:600;font-size:0.85rem'>{zone}</span> "
-        f"<span style='color:#555;font-size:0.85rem'>{label}</span>"
-    )
+def display_s1(label: str) -> str:
+    return S1_DISPLAY.get(label, label)
 
 
-def render_result(res: dict, engine, raw: dict, scenario: str):
-    s1 = res["stage1"]
-    fin = res["final"]
+def display_s2(label: str) -> str:
+    return S2_DISPLAY.get(label, label)
 
-    # ── Stage 1 ──
-    st.markdown("#### Stage 1 — Associated vs Other Anemia Cause")
-    c1, c2 = st.columns([1, 1])
-    c1.metric("Stage 1 call", s1["pred_display"],
-              help=f"Decision threshold {s1['threshold']} on P(AAC)")
-    c2.metric("P(AAC)", f"{s1['p_AAC']:.1%}")
-    st.progress(min(max(s1["p_AAC"], 0.0), 1.0))
-    if s1["conformal_set"]:
-        st.caption(f"Conformal set (α={res['alpha']}): "
-                   + ", ".join(s1["conformal_set"]))
 
-    if not res["escalated"]:
-        st.markdown("---")
-        st.markdown("#### Result")
-        st.markdown(zone_badge("Excluded"), unsafe_allow_html=True)
-        st.info("Classified as **OAC** (Other Anemia Cause) at Stage 1. "
-                "The four-subtype Stage 2 model is not applied; further "
-                "non-anemia workup is indicated.")
-        render_reflex(fin.get("reflex"))
-        render_narrative(res)
-        return
+def display_diagnosis(raw_label: str) -> str:
+    """Convert a raw data label (IDA/HGB_HTZ/NORMAL/...) to its display form."""
+    if raw_label in DIAGNOSIS_TO_S2:
+        internal = DIAGNOSIS_TO_S2[raw_label]
+        return S2_DISPLAY.get(internal, internal)
+    return raw_label
 
-    # ── Stage 2 ──
-    st.markdown("---")
-    st.markdown("#### Stage 2 — Anemia subtype")
-    s2 = res["stage2"]
-    prob_df = (
-        pd.DataFrame({"Subtype": list(s2["probs"].keys()),
-                      "Probability": list(s2["probs"].values())})
-        .sort_values("Probability", ascending=False)
-        .reset_index(drop=True)
-    )
-    cc1, cc2 = st.columns([1, 1.3])
-    with cc1:
-        st.metric("Stage 2 call", s2["pred_display"])
-        st.markdown(zone_badge(s2["zone"]), unsafe_allow_html=True)
-        st.caption(
-            f"Confidence {s2['confidence']:.1%} "
-            f"(zones: LOW <{s2['zone_low']} ≤ MEDIUM < {s2['zone_high']} ≤ HIGH)"
+
+# ── Feature derivation (mirrors m4_e2e.compute_missing_ratios) ──
+def compute_missing_ratios(df: pd.DataFrame, feat_names: list[str]) -> pd.DataFrame:
+    """Compute any '<num>_div_<den>' feature the model expects from raw columns."""
+    df = df.copy()
+    for f in feat_names:
+        if f not in df.columns and "_div_" in f:
+            num, den = f.split("_div_")
+            if num in df.columns and den in df.columns:
+                df[f] = df[num] / df[den].replace(0, np.nan)
+    df = df.replace([np.inf, -np.inf], np.nan)
+    return df
+
+
+class CascadeEngine:
+    """Loads models + assets once; runs cascade inference per patient frame."""
+
+    def __init__(self, models_dir: str | Path, assets_dir: str | Path):
+        self.models_dir = Path(models_dir)
+        self.assets_dir = Path(assets_dir)
+        self._predictors: dict[str, object] = {}
+        self._feature_names: dict[str, list[str]] = {}
+
+        self.thresholds = json.load(open(self.assets_dir / "threshold_config.json"))["scenarios"]
+        self.qhat = json.load(open(self.assets_dir / "conformal_qhat.json"))
+        self.reflex = json.load(open(self.assets_dir / "reflex_rules.json"))["rules"]
+        self.cal_registry = joblib.load(
+            self.assets_dir / "calibrators" / "calibration_registry.joblib"
         )
-        if s2["conformal_set"]:
-            st.caption(f"Conformal set (α={res['alpha']}): "
-                       + ", ".join(s2["conformal_set"]))
-    with cc2:
-        st.bar_chart(prob_df.set_index("Subtype"), height=210)
+        self._calibrators: dict[str, object] = {}
 
-    st.markdown("---")
-    st.markdown("#### Result")
-    color, _ = ZONE_STYLE.get(fin["zone"], ("#6B7280", ""))
-    st.markdown(
-        f"<div style='font-size:1.3rem;font-weight:700'>{fin['label_display']}"
-        f"&nbsp;&nbsp;{zone_badge(fin['zone'])}</div>",
-        unsafe_allow_html=True,
-    )
-    render_reflex(fin.get("reflex"))
-    render_narrative(res)
-    render_shap_section(res, engine, raw, scenario)
-
-
-def render_narrative(res: dict):
-    st.markdown("##### Clinical narrative")
-    st.markdown(
-        f"<div style='padding:8px 14px;background:#f4f4f6;border-radius:6px;"
-        f"color:#333'>{clinical_narrative(res)}</div>",
-        unsafe_allow_html=True,
-    )
-
-
-def render_shap_section(res: dict, engine, raw: dict, scenario: str):
-    """On-demand SHAP explanation for the predicted class (KernelExplainer)."""
-    st.markdown("---")
-    st.markdown("##### Feature attribution (SHAP)")
-    stage = res["final"]["tier"]
-    pred_internal = res["final"]["label_internal"]
-    if stage == 1:
-        ci = 1  # explain P(IAS)
-        klass = res["stage1"]["pred_display"]
-    else:
-        ci = next(k for k, v in S2_CLASSES.items() if v == pred_internal)
-        klass = res["stage2"]["pred_display"]
-
-    st.caption(
-        f"Top features driving the **{klass}** prediction "
-        f"(Tier {stage}). Computed on demand — takes a few seconds."
-    )
-    if st.button("Compute SHAP explanation", key="shap_btn"):
-        with st.spinner("Computing SHAP values…"):
-            try:
-                shap_df = engine.explain(
-                    raw, scenario=scenario, stage=stage,
-                    class_index=ci, top_k=10, n_background=20,
-                )
-            except Exception as e:  # noqa: BLE001
-                st.warning(f"SHAP computation could not complete: {e}")
-                return
-        st.pyplot(_shap_figure(shap_df, klass, scenario))
-        st.caption(
-            "Bars show signed SHAP values (impact on the predicted class "
-            "probability). Positive values push toward the prediction."
-        )
-
-
-def _shap_figure(shap_df, klass: str, scenario: str):
-    """Horizontal sorted SHAP bar chart, styled like the manuscript figure."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    df = shap_df.copy()
-    df["abs"] = df["shap_value"].abs()
-    df = df.sort_values("abs", ascending=True)  # smallest at bottom -> largest on top
-
-    pos = "#C0392B"   # ruby red (positive)
-    neg = "#6B7280"   # gray (negative)
-    colors = [pos if v >= 0 else neg for v in df["shap_value"]]
-
-    fig, ax = plt.subplots(figsize=(7, 4.2))
-    bars = ax.barh(df["feature_display"], df["shap_value"], color=colors,
-                   height=0.66)
-    for bar, val in zip(bars, df["shap_value"]):
-        ax.text(bar.get_width() + (0.002 if val >= 0 else -0.002),
-                bar.get_y() + bar.get_height() / 2,
-                f"{val:+.3f}", va="center",
-                ha="left" if val >= 0 else "right",
-                fontsize=8, color="#333")
-    scen_txt = "CBC+BIO" if scenario == "CBC_BIO" else "CBC only"
-    ax.set_title(f"SHAP — Top features for {klass} ({scen_txt})",
-                 fontsize=11, fontweight="bold", pad=10)
-    ax.set_xlabel("SHAP value (impact on prediction)", fontsize=9)
-    ax.axvline(0, color="#999", linewidth=0.8)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(labelsize=8)
-    fig.tight_layout()
-    return fig
-
-
-def render_reflex(reflex: dict | None):
-    if not reflex:
-        st.caption("No reflex recommendation matched.")
-        return
-    ucolor = URGENCY_STYLE.get(reflex.get("urgency", ""), "#6B7280")
-    st.markdown("##### Reflex recommendation")
-    st.markdown(
-        f"<div style='border-left:4px solid {ucolor};padding:8px 14px;"
-        f"background:#fafafa'>"
-        f"<b>{reflex['test']}</b><br>"
-        f"<span style='color:{ucolor};font-weight:600;text-transform:uppercase;"
-        f"font-size:0.8rem'>{reflex.get('urgency','')}</span>"
-        f"<span style='color:#666'> · {reflex.get('rationale','')}</span>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-
-
-# ════════════════════════════════════════════════════════════════════
-def main():
-    st.set_page_config(page_title="Anemia Cascade CDS", page_icon="🩸",
-                       layout="wide")
-    st.title("Anemia Cascade CDS")
-    st.caption(
-        "Two-stage clinical decision support for anemia subtype "
-        "classification · research demonstration, not a medical device."
-    )
-
-    with st.sidebar:
-        st.header("Configuration")
-        scenario = st.radio(
-            "Scenario",
-            ["CBC_BIO", "CBC_Only"],
-            format_func=lambda s: "CBC + biochemistry" if s == "CBC_BIO" else "CBC only",
-            help="CBC+biochemistry adds ferritin, iron, LD and UIBC.",
-        )
-        alpha = st.select_slider(
-            "Conformal α (1 − coverage)",
-            options=[0.05, 0.10, 0.20], value=0.10,
-            help="Smaller α → wider prediction sets, higher coverage.",
-        )
-        st.markdown("---")
-        mode = st.radio("Input", ["Demo patient", "Manual entry"])
-
-    engine = get_engine()
-    needs_bio = scenario == "CBC_BIO"
-    fields = CBC_FIELDS + (BIO_FIELDS if needs_bio else [])
-
-    raw = {}
-    if mode == "Demo patient":
-        cda, cdb, cdc = st.columns(3)
-        split = cda.selectbox("Cohort", ["test", "train", "temporal"], index=0)
-        kind = cdb.selectbox(
-            "Data type", ["real_anon", "synthetic"],
-            format_func=lambda k: "Anonymized real" if k == "real_anon" else "Synthetic",
-            help="Anonymized real patients (edge cases) or privacy-safe synthetic.",
-        )
-        df = load_demo(split, kind)
-        idx = cdc.selectbox(
-            "Patient", df.index,
-            format_func=lambda i: f"{df.loc[i,'sample_id']} · true: "
-            f"{display_s2(df.loc[i,'DIAGNOSIS']) if df.loc[i,'DIAGNOSIS'] in ('IDA','HA','HGB_HTZ','NORMAL') else 'OAC'}",
-        )
-        row = df.loc[idx]
-        raw = {f[0]: float(row[f[0]]) for f in fields if f[0] in row}
-        with st.expander("Raw values for this patient"):
-            st.dataframe(
-                pd.DataFrame({"value": {f[1]: row.get(f[0]) for f in fields}}),
-                use_container_width=True,
+    # ── lazy model loading (keeps memory low until a scenario is used) ──
+    def _predictor(self, key: str):
+        if key not in self._predictors:
+            from autogluon.tabular import TabularPredictor
+            self._predictors[key] = TabularPredictor.load(
+                str(self.models_dir / key),
+                require_version_match=False,
+                require_py_version_match=False,
             )
-        true_label = row.get("DIAGNOSIS")
-    else:
-        st.markdown("Enter raw measured values:")
-        true_label = None
-        cols = st.columns(3)
-        for n, (key, label, unit, dflt, lo, hi, step) in enumerate(fields):
-            with cols[n % 3]:
-                raw[key] = st.number_input(
-                    f"{label} ({unit})", value=float(dflt),
-                    min_value=float(lo), max_value=float(hi), step=float(step),
-                )
+            self._feature_names[key] = joblib.load(
+                self.models_dir / key / "feature_names.joblib"
+            )
+        return self._predictors[key], self._feature_names[key]
 
-    st.markdown("")
-    if st.button("Run cascade", type="primary", use_container_width=True):
-        with st.spinner("Running cascade…"):
-            res = engine.run(raw, scenario=scenario, alpha=alpha)
-        # persist so the in-result SHAP button doesn't wipe the output on rerun
-        st.session_state["last_result"] = res
-        st.session_state["last_raw"] = raw
-        st.session_state["last_scenario"] = scenario
-        st.session_state["last_true"] = true_label
+    def _calibrator(self, name: str):
+        """Load an isotonic calibrator file lazily; None if uncalibrated."""
+        if name not in self._calibrators:
+            fp = self.assets_dir / "calibrators" / f"{name}_calibrator.joblib"
+            obj = joblib.load(fp) if fp.exists() else None
+            # calibrator file may be wrapped: {'calibrator': <estimator>, 'meta': {...}}
+            if isinstance(obj, dict) and "calibrator" in obj:
+                obj = obj["calibrator"]
+            self._calibrators[name] = obj
+        return self._calibrators[name]
 
-    if "last_result" in st.session_state:
-        res = st.session_state["last_result"]
-        render_result(
-            res,
-            engine,
-            st.session_state["last_raw"],
-            st.session_state["last_scenario"],
+    # ── probability helpers ──
+    def _predict_proba(self, key: str, X: pd.DataFrame) -> pd.DataFrame:
+        pred, feats = self._predictor(key)
+        Xd = compute_missing_ratios(X, feats)
+        missing = [f for f in feats if f not in Xd.columns]
+        for f in missing:
+            Xd[f] = np.nan
+        return pred.predict_proba(Xd[feats])
+
+    def _apply_calibration_s1(self, scenario: str, prob_ias: np.ndarray) -> np.ndarray:
+        reg = self.cal_registry.get(f"stage1_{scenario}", {})
+        if reg.get("method") == "isotonic":
+            cal = self._calibrator(f"stage1_{scenario.lower()}")
+            if cal is not None:
+                return cal.predict(prob_ias)
+        return prob_ias
+
+    # ── confidence zone ──
+    @staticmethod
+    def _zone(confidence: float, low: float, high: float) -> str:
+        if confidence >= high:
+            return "HIGH"
+        if confidence < low:
+            return "LOW"
+        return "MEDIUM"
+
+    # ── conformal set ──
+    def _conformal_set(self, scenario: str, stage: int, probs: np.ndarray,
+                       alpha: float = 0.10) -> list[str]:
+        key = f"{scenario.lower()}_S{stage}_a{alpha:.2f}"
+        q = self.qhat.get(key)
+        names = S1_CLASSES if stage == 1 else S2_CLASSES
+        if q is None:
+            return []
+        order = np.argsort(-probs)
+        cumsum, pset = 0.0, []
+        for cls in order:
+            pset.append(names[int(cls)])
+            cumsum += probs[cls]
+            if cumsum >= q:
+                break
+        return pset
+
+    # ── reflex lookup (wildcard '*' supported) ──
+    def _reflex(self, pred_label: str, zone: str, tier: int) -> dict | None:
+        # reflex rules use underscore form (HGB_HTZ); internal codes use space (HGB HTZ)
+        candidates = {pred_label, pred_label.replace(" ", "_"), "*"}
+        for r in self.reflex:
+            if r["tier"] != tier:
+                continue
+            if r["zone"] != zone:
+                continue
+            if r["prediction"] in candidates:
+                return r
+        return None
+
+    # ── main entry: single-patient cascade ──
+    def run(self, raw_row: dict, scenario: str, alpha: float = 0.10) -> dict:
+        """Run the full cascade for one patient (dict of raw measured values)."""
+        sc = self.thresholds[scenario]
+        keys = SCENARIOS[scenario]
+        X = pd.DataFrame([raw_row])
+
+        # ── Tier 1: Stage 1 binary (AAC vs OAC) ──
+        s1_proba = self._predict_proba(keys["s1"], X)
+        # AutoGluon may label columns as strings ('IAS') or integers (1=IAS,0=DAS)
+        if "IAS" in s1_proba.columns:
+            p_ias = float(s1_proba["IAS"].values[0])
+        elif 1 in s1_proba.columns:
+            p_ias = float(s1_proba[1].values[0])
+        else:
+            p_ias = float(s1_proba.iloc[:, -1].values[0])
+        p_ias = float(self._apply_calibration_s1(scenario, np.array([p_ias]))[0])
+        p_das = 1.0 - p_ias
+        s1_threshold = sc["stage1"]["threshold"]
+        s1_pred = "IAS" if p_ias >= s1_threshold else "DAS"
+        s1_probs_vec = np.array([p_das, p_ias])
+        s1_conf = float(max(p_das, p_ias))
+        s1_cset = self._conformal_set(scenario, 1, s1_probs_vec, alpha)
+
+        result = {
+            "scenario": scenario,
+            "alpha": alpha,
+            "stage1": {
+                "pred_internal": s1_pred,
+                "pred_display": display_s1(s1_pred),
+                "p_AAC": p_ias,
+                "p_OAC": p_das,
+                "threshold": s1_threshold,
+                "conformal_set": [display_s1(c) for c in s1_cset],
+            },
+            "escalated": False,
+            "stage2": None,
+            "final": {},
+        }
+
+        # OAC -> excluded from Stage 2 (cascade stops, OAC is the answer)
+        if s1_pred == "DAS":
+            # Prefer the explicit OAC (DAS/Excluded) rule; fall back gracefully.
+            reflex = self._reflex("DAS", "Excluded", 1) or self._reflex("*", "LOW", 1)
+            result["final"] = {
+                "label_internal": "DAS",
+                "label_display": "OAC",
+                "zone": "Excluded",
+                "tier": 1,
+                "confidence": s1_conf,
+                "reflex": reflex,
+            }
+            return result
+
+        # ── Tier 2: Stage 2 four-class (subtype) ──
+        s2_proba = self._predict_proba(keys["s2"], X)
+        # S2 model columns are integer class indices 0..3 (0=DEA,1=HA,2=HGB HTZ,3=Normal)
+        probs = np.zeros(4)
+        for i in range(4):
+            if i in s2_proba.columns:
+                probs[i] = float(s2_proba[i].values[0])
+            elif str(i) in s2_proba.columns:
+                probs[i] = float(s2_proba[str(i)].values[0])
+            elif S2_CLASSES[i] in s2_proba.columns:
+                probs[i] = float(s2_proba[S2_CLASSES[i]].values[0])
+        # normalize defensively
+        if probs.sum() > 0:
+            probs = probs / probs.sum()
+        s2_idx = int(np.argmax(probs))
+        s2_internal = S2_CLASSES[s2_idx]
+        s2_conf = float(probs[s2_idx])
+        zlow, zhigh = sc["stage2"]["zone_low"], sc["stage2"]["zone_high"]
+        zone = self._zone(s2_conf, zlow, zhigh)
+        s2_cset = self._conformal_set(scenario, 2, probs, alpha)
+        tier = 2
+        reflex = self._reflex(s2_internal, zone, 1) or self._reflex(s2_internal, zone, 2) \
+                 or self._reflex("*", zone, 1)
+
+        result["escalated"] = True
+        result["stage2"] = {
+            "pred_internal": s2_internal,
+            "pred_display": display_s2(s2_internal),
+            "probs": {display_s2(S2_CLASSES[i]): float(probs[i]) for i in range(4)},
+            "confidence": s2_conf,
+            "zone": zone,
+            "zone_low": zlow,
+            "zone_high": zhigh,
+            "conformal_set": [display_s2(c) for c in s2_cset],
+        }
+        result["final"] = {
+            "label_internal": s2_internal,
+            "label_display": display_s2(s2_internal),
+            "zone": zone,
+            "tier": tier,
+            "confidence": s2_conf,
+            "reflex": reflex,
+        }
+        return result
+
+    # ── SHAP explanation for one patient (KernelExplainer, on demand) ──
+    def explain(self, raw_row: dict, scenario: str, stage: int,
+                class_index: int, top_k: int = 10,
+                n_background: int = 20) -> pd.DataFrame:
+        """Per-patient SHAP top-k features for the predicted class.
+
+        Uses KernelExplainer (mirrors m5_shap) with a small background set for
+        speed. Returns a DataFrame: feature_display, shap_value (signed),
+        sorted by absolute impact. Computed on demand — not in the main path.
+        """
+        import shap
+        from functools import partial
+
+        keys = SCENARIOS[scenario]
+        model_key = keys["s1"] if stage == 1 else keys["s2"]
+        pred, feats = self._predictor(model_key)
+
+        # background: a small sample of demo training rows, ratio-completed
+        bg_path = self.assets_dir / "demo_data" / "train_real_anon.csv"
+        bg_raw = pd.read_csv(bg_path)
+        bg = compute_missing_ratios(bg_raw, feats)
+        for f in feats:
+            if f not in bg.columns:
+                bg[f] = np.nan
+        bg = bg[feats].dropna(how="all")
+        if len(bg) > n_background:
+            bg = bg.sample(n_background, random_state=42)
+
+        # patient to explain
+        X = compute_missing_ratios(pd.DataFrame([raw_row]), feats)
+        for f in feats:
+            if f not in X.columns:
+                X[f] = np.nan
+        X = X[feats]
+
+        cols = feats
+
+        def predict_fn(arr, _ci):
+            Xdf = pd.DataFrame(arr, columns=cols)
+            proba = pred.predict_proba(Xdf)
+            vals = proba.values if isinstance(proba, pd.DataFrame) else proba
+            if stage == 1:
+                # binary: explain P(IAS) (column for class 1)
+                if vals.ndim == 2 and vals.shape[1] == 2:
+                    return vals[:, 1]
+                return vals.ravel()
+            return vals[:, _ci]
+
+        explainer = shap.KernelExplainer(
+            partial(predict_fn, _ci=class_index), bg.values
         )
-        lt = st.session_state.get("last_true")
-        if lt is not None:
-            shown = (display_s2(lt)
-                     if lt in ("IDA", "HA", "HGB_HTZ", "NORMAL") else "OAC")
-            st.caption(f"Reference label for this demo patient: **{shown}** "
-                       "(not used by the model).")
+        sv = explainer.shap_values(X.values, silent=True, nsamples=100)
+        sv = np.array(sv).reshape(-1)  # one patient
 
-    st.markdown("---")
-    st.caption(
-        "Internal class codes are preserved as trained; AAC/OAC/IDA/HGB HTZ are "
-        "display labels. Demo data contains no identifiable patient information."
-    )
-
-
-if __name__ == "__main__":
-    main()
+        df = pd.DataFrame({
+            "feature": feats,
+            "shap_value": sv,
+            "abs": np.abs(sv),
+        }).sort_values("abs", ascending=False).head(top_k)
+        df["feature_display"] = df["feature"].map(feat_display)
+        return df[["feature_display", "shap_value"]].reset_index(drop=True)
