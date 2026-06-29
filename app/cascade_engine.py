@@ -77,7 +77,9 @@ class CascadeEngine:
         if key not in self._predictors:
             from autogluon.tabular import TabularPredictor
             self._predictors[key] = TabularPredictor.load(
-                str(self.models_dir / key), require_version_match=False
+                str(self.models_dir / key),
+                require_version_match=False,
+                require_py_version_match=False,
             )
             self._feature_names[key] = joblib.load(
                 self.models_dir / key / "feature_names.joblib"
