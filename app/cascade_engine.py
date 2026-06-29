@@ -33,6 +33,82 @@ SCENARIOS = {
     "CBC_BIO":  {"s1": "s1_bio", "s2": "s2_bio"},
 }
 
+# Feature display names for SHAP panel (mirrors m5_shap.FEATURE_DISPLAY)
+FEATURE_DISPLAY = {
+    "mcv_f_l": "MCV", "ret_he_pg": "Ret-He", "rbc_10_6_u_l": "RBC",
+    "ret_number_10_6_l": "RET#", "rdw_sd_fl": "RDW-SD", "delta_he_pg": "Delta-He",
+    "frc_perc": "FRC", "mchc_g_dl": "MCHC", "irf_pct": "IRF", "nrbc_pct": "NRBC",
+    "hgb_g_d_l": "HGB", "micro_macro_ratio": "MicroR/MacroR", "yas": "Age",
+    "ferritin": "Ferritin", "demir": "Iron", "ldh": "LD", "uibc": "UIBC",
+    "hgb_g_d_l_div_mcv_f_l": "HGB/MCV", "hgb_g_d_l_div_ret_he_pg": "HGB/Ret-He",
+    "rbc_10_6_u_l_div_mcv_f_l": "RBC/MCV", "rbc_10_6_u_l_div_ret_he_pg": "RBC/Ret-He",
+    "irf_pct_div_micro_macro_ratio": "IRF/(MicroR/MacroR)",
+    "hgb_g_d_l_div_rdw_sd_fl": "HGB/RDW-SD", "rbc_10_6_u_l_div_rdw_sd_fl": "RBC/RDW-SD",
+    "hgb_g_d_l_div_mchc_g_dl": "HGB/MCHC", "mcv_f_l_div_rdw_sd_fl": "MCV/RDW-SD",
+    "rdw_sd_fl_div_micro_macro_ratio": "RDW-SD/(MicroR/MacroR)",
+    "ret_he_pg_div_micro_macro_ratio": "Ret-He/(MicroR/MacroR)",
+    "ret_number_10_6_l_div_ret_he_pg": "RET#/Ret-He",
+    "mchc_g_dl_div_rdw_sd_fl": "MCHC/RDW-SD",
+    "mcv_f_l_div_micro_macro_ratio": "MCV/(MicroR/MacroR)",
+    "hgb_g_d_l_div_rbc_10_6_u_l": "HGB/RBC", "ret_number_10_6_l_div_mcv_f_l": "RET#/MCV",
+    "ret_number_10_6_l_div_mchc_g_dl": "RET#/MCHC",
+    "rbc_10_6_u_l_div_mchc_g_dl": "RBC/MCHC", "rdw_sd_fl_div_ferritin": "RDW-SD/Ferritin",
+    "mchc_g_dl_div_ferritin": "MCHC/Ferritin", "mcv_f_l_div_ferritin": "MCV/Ferritin",
+    "rbc_10_6_u_l_div_ferritin": "RBC/Ferritin", "ret_he_pg_div_ferritin": "Ret-He/Ferritin",
+    "hgb_g_d_l_div_ferritin": "HGB/Ferritin", "ret_he_pg_div_demir": "Ret-He/Iron",
+    "mcv_f_l_div_demir": "MCV/Iron", "mchc_g_dl_div_demir": "MCHC/Iron",
+    "rdw_sd_fl_div_demir": "RDW-SD/Iron", "rbc_10_6_u_l_div_demir": "RBC/Iron",
+    "hgb_g_d_l_div_demir": "HGB/Iron", "ferritin_div_uibc": "Ferritin/UIBC",
+    "demir_div_uibc": "Iron/UIBC", "ldh_div_uibc": "LD/UIBC", "demir_div_ldh": "Iron/LD",
+}
+
+
+def feat_display(name: str) -> str:
+    return FEATURE_DISPLAY.get(name, name)
+
+
+# Clinical narrative templates (condensed from m8_cds_report.NARRATIVE_TEMPLATES)
+def clinical_narrative(result: dict) -> str:
+    fin = result["final"]
+    zone = fin["zone"]
+    label = fin["label_display"]
+    escalated = result["escalated"]
+    s1_zone = "HIGH" if not escalated else result.get("stage2", {}).get("zone", "")
+
+    if zone == "Excluded":
+        return (f"[{label}] — Classified as Other Anemia Cause at Stage 1. "
+                "The four-subtype model is not applied; further non-anemia "
+                "workup (e.g. chronic disease, B12/folate, renal causes) is "
+                "indicated.")
+    if zone == "LOW":
+        return (f"[{label}] — Classified in the low-confidence zone. The model "
+                "prediction alone is insufficient; expert hematology "
+                "consultation is recommended.")
+    if escalated and result["final"]["tier"] == 2 and zone == "HIGH":
+        return (f"[{label}] — Initially classified with moderate confidence "
+                "(CBC only); confidence improved to HIGH after biochemistry was "
+                "added. The cascade demonstrates the selective biochemistry "
+                "strategy.")
+    if zone == "MEDIUM":
+        return (f"[{label}] — Moderate confidence after the available panel. "
+                "Expert review and additional clinical information are "
+                "recommended.")
+    # HIGH at tier 1 — class-specific
+    by_class = {
+        "IDA": "CBC profile shows strong concordance with iron deficiency "
+               "anemia. Ferritin confirmation is recommended.",
+        "HA": "CBC parameters show strong concordance with hemolytic anemia; "
+              "reticulocyte and hemolysis markers support this classification.",
+        "HGB HTZ": "CBC profile is consistent with heterozygous "
+                   "hemoglobinopathy. Hemoglobin electrophoresis is recommended "
+                   "for definitive diagnosis.",
+        "Normal": "CBC parameters are within normal limits; no anemia subtype "
+                  "detected. Additional biochemical workup is unlikely to be "
+                  "needed.",
+    }
+    tail = by_class.get(label, "Classified with high confidence.")
+    return f"[{label}] — {tail}"
+
 
 def display_s1(label: str) -> str:
     return S1_DISPLAY.get(label, label)
@@ -77,9 +153,7 @@ class CascadeEngine:
         if key not in self._predictors:
             from autogluon.tabular import TabularPredictor
             self._predictors[key] = TabularPredictor.load(
-                str(self.models_dir / key),
-                require_version_match=False,
-                require_py_version_match=False,
+                str(self.models_dir / key), require_version_match=False
             )
             self._feature_names[key] = joblib.load(
                 self.models_dir / key / "feature_names.joblib"
@@ -142,14 +216,15 @@ class CascadeEngine:
 
     # ── reflex lookup (wildcard '*' supported) ──
     def _reflex(self, pred_label: str, zone: str, tier: int) -> dict | None:
+        # reflex rules use underscore form (HGB_HTZ); internal codes use space (HGB HTZ)
+        candidates = {pred_label, pred_label.replace(" ", "_"), "*"}
         for r in self.reflex:
             if r["tier"] != tier:
                 continue
             if r["zone"] != zone:
                 continue
-            if r["prediction"] not in (pred_label, "*"):
-                continue
-            return r
+            if r["prediction"] in candidates:
+                return r
         return None
 
     # ── main entry: single-patient cascade ──
@@ -194,7 +269,8 @@ class CascadeEngine:
 
         # OAC -> excluded from Stage 2 (cascade stops, OAC is the answer)
         if s1_pred == "DAS":
-            reflex = self._reflex("*", "LOW", 1)  # OAC needs further non-anemia workup
+            # Prefer the explicit OAC (DAS/Excluded) rule; fall back gracefully.
+            reflex = self._reflex("DAS", "Excluded", 1) or self._reflex("*", "LOW", 1)
             result["final"] = {
                 "label_internal": "DAS",
                 "label_display": "OAC",
@@ -249,3 +325,65 @@ class CascadeEngine:
             "reflex": reflex,
         }
         return result
+
+    # ── SHAP explanation for one patient (KernelExplainer, on demand) ──
+    def explain(self, raw_row: dict, scenario: str, stage: int,
+                class_index: int, top_k: int = 10,
+                n_background: int = 20) -> pd.DataFrame:
+        """Per-patient SHAP top-k features for the predicted class.
+
+        Uses KernelExplainer (mirrors m5_shap) with a small background set for
+        speed. Returns a DataFrame: feature_display, shap_value (signed),
+        sorted by absolute impact. Computed on demand — not in the main path.
+        """
+        import shap
+        from functools import partial
+
+        keys = SCENARIOS[scenario]
+        model_key = keys["s1"] if stage == 1 else keys["s2"]
+        pred, feats = self._predictor(model_key)
+
+        # background: a small sample of demo training rows, ratio-completed
+        bg_path = self.assets_dir / "demo_data" / "train_real_anon.csv"
+        bg_raw = pd.read_csv(bg_path)
+        bg = compute_missing_ratios(bg_raw, feats)
+        for f in feats:
+            if f not in bg.columns:
+                bg[f] = np.nan
+        bg = bg[feats].dropna(how="all")
+        if len(bg) > n_background:
+            bg = bg.sample(n_background, random_state=42)
+
+        # patient to explain
+        X = compute_missing_ratios(pd.DataFrame([raw_row]), feats)
+        for f in feats:
+            if f not in X.columns:
+                X[f] = np.nan
+        X = X[feats]
+
+        cols = feats
+
+        def predict_fn(arr, _ci):
+            Xdf = pd.DataFrame(arr, columns=cols)
+            proba = pred.predict_proba(Xdf)
+            vals = proba.values if isinstance(proba, pd.DataFrame) else proba
+            if stage == 1:
+                # binary: explain P(IAS) (column for class 1)
+                if vals.ndim == 2 and vals.shape[1] == 2:
+                    return vals[:, 1]
+                return vals.ravel()
+            return vals[:, _ci]
+
+        explainer = shap.KernelExplainer(
+            partial(predict_fn, _ci=class_index), bg.values
+        )
+        sv = explainer.shap_values(X.values, silent=True, nsamples=100)
+        sv = np.array(sv).reshape(-1)  # one patient
+
+        df = pd.DataFrame({
+            "feature": feats,
+            "shap_value": sv,
+            "abs": np.abs(sv),
+        }).sort_values("abs", ascending=False).head(top_k)
+        df["feature_display"] = df["feature"].map(feat_display)
+        return df[["feature_display", "shap_value"]].reset_index(drop=True)
