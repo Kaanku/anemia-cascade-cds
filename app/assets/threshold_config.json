@@ -1,0 +1,66 @@
+{
+  "version": "M2_v1",
+  "created": "2026-06-28T10:01:23.294887",
+  "scenarios": {
+    "CBC_Only": {
+      "stage1": {
+        "threshold": 0.5,
+        "method": "F1-optimal (plateau — equivalent over 0.26-0.55)",
+        "positive_class": "IAS",
+        "probability_column": "prob_IAS_cal"
+      },
+      "stage2": {
+        "zone_low": 0.35,
+        "zone_high": 0.82,
+        "method": "Accuracy≥0.85-based zone",
+        "probability_columns": [
+          "prob_DEA_cal",
+          "prob_HA_cal",
+          "prob_HGB_HTZ_cal",
+          "prob_Normal_cal"
+        ],
+        "class_order": [
+          "DEA",
+          "HA",
+          "HGB_HTZ",
+          "Normal"
+        ],
+        "zones": {
+          "HIGH": "confidence >= 0.82",
+          "MEDIUM": "0.35 <= confidence < 0.82",
+          "LOW": "confidence < 0.35"
+        }
+      }
+    },
+    "CBC_BIO": {
+      "stage1": {
+        "threshold": 0.44,
+        "method": "Clinically safe (Sens≥0.95, thesis reference)",
+        "positive_class": "IAS",
+        "probability_column": "prob_IAS_cal"
+      },
+      "stage2": {
+        "zone_low": 0.35,
+        "zone_high": 0.6,
+        "method": "Accuracy≥0.85-based zone",
+        "probability_columns": [
+          "prob_DEA_cal",
+          "prob_HA_cal",
+          "prob_HGB_HTZ_cal",
+          "prob_Normal_cal"
+        ],
+        "class_order": [
+          "DEA",
+          "HA",
+          "HGB_HTZ",
+          "Normal"
+        ],
+        "zones": {
+          "HIGH": "confidence >= 0.6",
+          "MEDIUM": "0.35 <= confidence < 0.6",
+          "LOW": "confidence < 0.35"
+        }
+      }
+    }
+  }
+}

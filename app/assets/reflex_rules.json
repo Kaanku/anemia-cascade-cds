@@ -1,0 +1,20 @@
+{
+  "version": "M7_v2",
+  "description": "Cascade-based reflex test recommendations",
+  "rules": [
+    {"prediction": "DEA","zone": "HIGH","tier": 1,"test": "Ferritin + serum iron","urgency": "routine","rationale": "IDA confirmation: iron deficiency parameters"},
+    {"prediction": "HA","zone": "HIGH","tier": 1,"test": "LD + indirect bilirubin + haptoglobin + peripheral smear","urgency": "urgent","rationale": "Hemolysis confirmation: acute hemolysis risk"},
+    {"prediction": "HGB_HTZ","zone": "HIGH","tier": 1,"test": "Hemoglobin electrophoresis / HPLC","urgency": "routine","rationale": "Hemoglobinopathy confirmation"},
+    {"prediction": "Normal","zone": "HIGH","tier": 1,"test": "No additional testing required","urgency": "none","rationale": "High-confidence normal — follow-up sufficient"},
+    {"prediction": "*","zone": "MEDIUM","tier": 1,"test": "Biochemistry panel (Ferritin, Iron, LD, UIBC)","urgency": "routine","rationale": "Moderate confidence — escalate to Tier 2 with biochemistry"},
+    {"prediction": "*","zone": "LOW","tier": 1,"test": "Biochemistry panel + specialist consultation","urgency": "urgent","rationale": "Low confidence — urgent biochemistry and expert review"},
+    {"prediction": "DAS","zone": "Excluded","tier": 1,"test": "Biochemistry panel (Ferritin, Iron, LD, UIBC)","urgency": "routine","rationale": "S1 OAC prediction — verify with biochemistry"},
+    {"prediction": "DEA","zone": "HIGH","tier": 2,"test": "Evaluate for oral iron therapy; consider 3-month follow-up CBC","urgency": "routine","rationale": "Confirmed IDA — recommend clinical evaluation for iron therapy"},
+    {"prediction": "HA","zone": "HIGH","tier": 2,"test": "Hemolysis panel (LD, indirect bilirubin, haptoglobin) + hematology consultation","urgency": "urgent","rationale": "Confirmed hemolytic anemia — investigate etiology"},
+    {"prediction": "HGB_HTZ","zone": "HIGH","tier": 2,"test": "Hemoglobin electrophoresis / HPLC + genetic counseling","urgency": "routine","rationale": "Confirmed hemoglobinopathy carrier — family screening"},
+    {"prediction": "Normal","zone": "HIGH","tier": 2,"test": "No additional testing required","urgency": "none","rationale": "Confirmed normal with full biochemistry panel"},
+    {"prediction": "DAS","zone": "Excluded","tier": 2,"test": "Investigate other anemia etiologies","urgency": "routine","rationale": "OAC after biochemistry — consider chronic disease, B12/folate, renal causes"},
+    {"prediction": "*","zone": "MEDIUM","tier": 2,"test": "Specialist review + extended workup","urgency": "routine","rationale": "Still uncertain after CBC+biochemistry — human verification needed"},
+    {"prediction": "*","zone": "LOW","tier": 2,"test": "Specialist consultation + extended workup","urgency": "urgent","rationale": "Low confidence after biochemistry — specialist review required"}
+  ]
+}
