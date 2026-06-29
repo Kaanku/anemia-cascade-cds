@@ -21,7 +21,9 @@ import streamlit as st
 APP_DIR = Path(__file__).parent
 ROOT = APP_DIR.parent
 sys.path.insert(0, str(APP_DIR))
-from cascade_engine import CascadeEngine, display_s2  # noqa: E402
+from cascade_engine import (  # noqa: E402
+    CascadeEngine, display_s2, clinical_narrative, S2_CLASSES, S1_CLASSES,
+)
 
 MODELS_DIR = ROOT / "deploy_models"
 ASSETS_DIR = APP_DIR / "assets"
@@ -78,7 +80,7 @@ def zone_badge(zone: str) -> str:
     )
 
 
-def render_result(res: dict):
+def render_result(res: dict, engine, raw: dict, scenario: str):
     s1 = res["stage1"]
     fin = res["final"]
 
@@ -101,6 +103,7 @@ def render_result(res: dict):
                 "The four-subtype Stage 2 model is not applied; further "
                 "non-anemia workup is indicated.")
         render_reflex(fin.get("reflex"))
+        render_narrative(res)
         return
 
     # ── Stage 2 ──
@@ -136,9 +139,52 @@ def render_result(res: dict):
         unsafe_allow_html=True,
     )
     render_reflex(fin.get("reflex"))
+    render_narrative(res)
+    render_shap_section(res, engine, raw, scenario)
 
 
-def render_reflex(reflex: dict | None):
+def render_narrative(res: dict):
+    st.markdown("##### Clinical narrative")
+    st.markdown(
+        f"<div style='padding:8px 14px;background:#f4f4f6;border-radius:6px;"
+        f"color:#333'>{clinical_narrative(res)}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_shap_section(res: dict, engine, raw: dict, scenario: str):
+    """On-demand SHAP explanation for the predicted class (KernelExplainer)."""
+    st.markdown("---")
+    st.markdown("##### Feature attribution (SHAP)")
+    stage = res["final"]["tier"]
+    pred_internal = res["final"]["label_internal"]
+    if stage == 1:
+        ci = 1  # explain P(IAS)
+        klass = res["stage1"]["pred_display"]
+    else:
+        ci = next(k for k, v in S2_CLASSES.items() if v == pred_internal)
+        klass = res["stage2"]["pred_display"]
+
+    st.caption(
+        f"Top features driving the **{klass}** prediction "
+        f"(Tier {stage}). Computed on demand — takes a few seconds."
+    )
+    if st.button("Compute SHAP explanation", key="shap_btn"):
+        with st.spinner("Computing SHAP values…"):
+            try:
+                shap_df = engine.explain(
+                    raw, scenario=scenario, stage=stage,
+                    class_index=ci, top_k=10, n_background=20,
+                )
+            except Exception as e:  # noqa: BLE001
+                st.warning(f"SHAP computation could not complete: {e}")
+                return
+        shap_df = shap_df.set_index("feature_display")
+        st.bar_chart(shap_df, height=320)
+        st.caption(
+            "Bars show signed SHAP values (impact on the predicted class "
+            "probability). Positive values push toward the prediction."
+        )
     if not reflex:
         st.caption("No reflex recommendation matched.")
         return
@@ -224,10 +270,24 @@ def main():
     if st.button("Run cascade", type="primary", use_container_width=True):
         with st.spinner("Running cascade…"):
             res = engine.run(raw, scenario=scenario, alpha=alpha)
-        render_result(res)
-        if true_label is not None:
-            shown = (display_s2(true_label)
-                     if true_label in ("IDA", "HA", "HGB_HTZ", "NORMAL") else "OAC")
+        # persist so the in-result SHAP button doesn't wipe the output on rerun
+        st.session_state["last_result"] = res
+        st.session_state["last_raw"] = raw
+        st.session_state["last_scenario"] = scenario
+        st.session_state["last_true"] = true_label
+
+    if "last_result" in st.session_state:
+        res = st.session_state["last_result"]
+        render_result(
+            res,
+            engine,
+            st.session_state["last_raw"],
+            st.session_state["last_scenario"],
+        )
+        lt = st.session_state.get("last_true")
+        if lt is not None:
+            shown = (display_s2(lt)
+                     if lt in ("IDA", "HA", "HGB_HTZ", "NORMAL") else "OAC")
             st.caption(f"Reference label for this demo patient: **{shown}** "
                        "(not used by the model).")
 
