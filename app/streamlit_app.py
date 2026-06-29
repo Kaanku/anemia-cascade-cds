@@ -179,12 +179,45 @@ def render_shap_section(res: dict, engine, raw: dict, scenario: str):
             except Exception as e:  # noqa: BLE001
                 st.warning(f"SHAP computation could not complete: {e}")
                 return
-        shap_df = shap_df.set_index("feature_display")
-        st.bar_chart(shap_df, height=320)
+        st.pyplot(_shap_figure(shap_df, klass, scenario))
         st.caption(
             "Bars show signed SHAP values (impact on the predicted class "
             "probability). Positive values push toward the prediction."
         )
+
+
+def _shap_figure(shap_df, klass: str, scenario: str):
+    """Horizontal sorted SHAP bar chart, styled like the manuscript figure."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    df = shap_df.copy()
+    df["abs"] = df["shap_value"].abs()
+    df = df.sort_values("abs", ascending=True)  # smallest at bottom -> largest on top
+
+    pos = "#C0392B"   # ruby red (positive)
+    neg = "#6B7280"   # gray (negative)
+    colors = [pos if v >= 0 else neg for v in df["shap_value"]]
+
+    fig, ax = plt.subplots(figsize=(7, 4.2))
+    bars = ax.barh(df["feature_display"], df["shap_value"], color=colors,
+                   height=0.66)
+    for bar, val in zip(bars, df["shap_value"]):
+        ax.text(bar.get_width() + (0.002 if val >= 0 else -0.002),
+                bar.get_y() + bar.get_height() / 2,
+                f"{val:+.3f}", va="center",
+                ha="left" if val >= 0 else "right",
+                fontsize=8, color="#333")
+    scen_txt = "CBC+BIO" if scenario == "CBC_BIO" else "CBC only"
+    ax.set_title(f"SHAP — Top features for {klass} ({scen_txt})",
+                 fontsize=11, fontweight="bold", pad=10)
+    ax.set_xlabel("SHAP value (impact on prediction)", fontsize=9)
+    ax.axvline(0, color="#999", linewidth=0.8)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(labelsize=8)
+    fig.tight_layout()
+    return fig
 
 
 def render_reflex(reflex: dict | None):
