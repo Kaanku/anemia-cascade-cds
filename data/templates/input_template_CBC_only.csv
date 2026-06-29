@@ -1,0 +1,2 @@
+patient_id,yas,hgb_g_d_l,rbc_10_6_u_l,mcv_f_l,mchc_g_dl,rdw_sd_fl,ret_he_pg,delta_he_pg,ret_number_10_6_l,irf_pct,frc_perc,nrbc_pct,micro_macro_ratio,TARGET,DIAGNOSIS
+EXAMPLE_001,45,11.2,4.35,78.5,32.1,48.0,28.4,-2.1,0.045,9.8,0.6,0.0,1.85,,
