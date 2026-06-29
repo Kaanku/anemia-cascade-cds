@@ -185,6 +185,9 @@ def render_shap_section(res: dict, engine, raw: dict, scenario: str):
             "Bars show signed SHAP values (impact on the predicted class "
             "probability). Positive values push toward the prediction."
         )
+
+
+def render_reflex(reflex: dict | None):
     if not reflex:
         st.caption("No reflex recommendation matched.")
         return
