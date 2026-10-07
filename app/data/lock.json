@@ -1,0 +1,199 @@
+{
+ "_meta": {
+  "engine": "tabpfn-3.5",
+  "model_version": "v3.5-fast",
+  "n_estimators": 2,
+  "rules": "s07.lock_one (study lock rules); HIGH cut-off at the 85% accuracy point (study: 90 %)",
+  "high_target": 0.85,
+  "locked_on": "cross-generation predictions on the real development patients (s16c/s17b; R34)",
+  "calibration_methods": {
+   "binary": [
+    "platt",
+    "uncalibrated"
+   ],
+   "multiclass": [
+    "temperature",
+    "uncalibrated"
+   ]
+  },
+  "created": "2026-10-07 23:16"
+ },
+ "A1_FULL_CBC_S1": {
+  "n_oof_rows": 863,
+  "n_oof_first_samples": 863,
+  "threshold": 0.65,
+  "oof_at_threshold": {
+   "macro_f1": 0.6907,
+   "sensitivity": 0.8148,
+   "specificity": 0.5796,
+   "accuracy": 0.7532
+  },
+  "threshold_youden": 0.85,
+  "oof_at_youden": {
+   "macro_f1": 0.6817,
+   "sensitivity": 0.7033,
+   "specificity": 0.7478,
+   "accuracy": 0.7149
+  },
+  "calibration": {
+   "method": "platt",
+   "coef": 0.4342104164343938,
+   "intercept": 0.275254876371199
+  },
+  "cv_ECE": {
+   "uncalibrated": 0.0983,
+   "platt": 0.0279
+  },
+  "predictions_sha256": "3a01deb10b8eb7d6e7a74a700057f5e6befbf5bce715c22b78afaa82cc6e02fe"
+ },
+ "A1_FULL_CBC_S2": {
+  "n_oof_rows": 637,
+  "n_oof_first_samples": 637,
+  "oof_accuracy_all": 0.6562,
+  "operating_points": {
+   "0.80": {
+    "cutoff": 0.88,
+    "n": 341,
+    "share": 0.5353,
+    "accuracy": 0.8035
+   },
+   "0.85": {
+    "cutoff": 0.99,
+    "n": 118,
+    "share": 0.1852,
+    "accuracy": 0.8559
+   },
+   "0.90": null,
+   "0.95": null
+  },
+  "high_cutoff": 0.99,
+  "low_cutoff": 0.35,
+  "conformal_qhat": {
+   "0.05": 0.997579877407956,
+   "0.1": 0.9899062848478577,
+   "0.2": 0.9298074152895074
+  },
+  "conformal_n_cal": 637,
+  "calibration": {
+   "method": "temperature",
+   "T": 2.2582925849348485
+  },
+  "cv_ECE": {
+   "uncalibrated": 0.1833,
+   "temperature": 0.0688
+  },
+  "predictions_sha256": "be97bfcab14e9d17adf1bb6a2684c9a86b5263b3ad862f6b7dbc91a7290e409c"
+ },
+ "A1_FULL_CBC_MX": {
+  "n_oof_rows": 391,
+  "n_oof_first_samples": 391,
+  "threshold": 0.41,
+  "oof_at_threshold": {
+   "macro_f1": 0.7868,
+   "sensitivity": 0.7663,
+   "specificity": 0.8068,
+   "accuracy": 0.7877
+  },
+  "threshold_youden": 0.41,
+  "oof_at_youden": {
+   "macro_f1": 0.7868,
+   "sensitivity": 0.7663,
+   "specificity": 0.8068,
+   "accuracy": 0.7877
+  },
+  "positive_class": "HGB_HTZ",
+  "oof_accuracy_all": 0.7775,
+  "operating_points": {
+   "0.80": {
+    "cutoff": 0.59,
+    "n": 367,
+    "share": 0.9386,
+    "accuracy": 0.8011
+   },
+   "0.85": {
+    "cutoff": 0.83,
+    "n": 292,
+    "share": 0.7468,
+    "accuracy": 0.8527
+   },
+   "0.90": null,
+   "0.95": null
+  },
+  "calibration": {
+   "method": "platt",
+   "coef": 0.44259703955997654,
+   "intercept": -0.085336189786953
+  },
+  "cv_ECE": {
+   "uncalibrated": 0.1095,
+   "platt": 0.0685
+  },
+  "predictions_sha256": "64088ef854feb46f4692a555aca9a15b2c0d4382d3eb92ae3a4ebf4bd866e7dd"
+ },
+ "A1_FULL_CBC_BIO_S1": {
+  "n_oof_rows": 657,
+  "n_oof_first_samples": 657,
+  "threshold": 0.63,
+  "oof_at_threshold": {
+   "macro_f1": 0.6916,
+   "sensitivity": 0.8129,
+   "specificity": 0.5673,
+   "accuracy": 0.7352
+  },
+  "threshold_youden": 0.85,
+  "oof_at_youden": {
+   "macro_f1": 0.6782,
+   "sensitivity": 0.6704,
+   "specificity": 0.7452,
+   "accuracy": 0.6941
+  },
+  "calibration": {
+   "method": "platt",
+   "coef": 0.40514478859872577,
+   "intercept": 0.18541848274985998
+  },
+  "cv_ECE": {
+   "uncalibrated": 0.1372,
+   "platt": 0.0277
+  },
+  "predictions_sha256": "96bf8be2455db4e2b13a7d4c557503e1a9a40981535feaa6a8f54c49a17078cc"
+ },
+ "A1_FULL_CBC_BIO_S2": {
+  "n_oof_rows": 449,
+  "n_oof_first_samples": 449,
+  "oof_accuracy_all": 0.6837,
+  "operating_points": {
+   "0.80": {
+    "cutoff": 0.82,
+    "n": 274,
+    "share": 0.6102,
+    "accuracy": 0.8029
+   },
+   "0.85": {
+    "cutoff": 0.93,
+    "n": 200,
+    "share": 0.4454,
+    "accuracy": 0.85
+   },
+   "0.90": null,
+   "0.95": null
+  },
+  "high_cutoff": 0.93,
+  "low_cutoff": 0.35,
+  "conformal_qhat": {
+   "0.05": 0.993807348668498,
+   "0.1": 0.9844867949642887,
+   "0.2": 0.902367630884681
+  },
+  "conformal_n_cal": 449,
+  "calibration": {
+   "method": "temperature",
+   "T": 1.8866332678852427
+  },
+  "cv_ECE": {
+   "uncalibrated": 0.1407,
+   "temperature": 0.0426
+  },
+  "predictions_sha256": "4ca935e648731ed24970c56fc795b74e17e6ffa4457dc734f4696510bdc93558"
+ }
+}

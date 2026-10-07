@@ -1,339 +1,272 @@
 """
-Anemia Cascade CDS — Streamlit demo app.
-
-Two-stage clinical decision support for anemia subtype classification.
-Run locally or on Streamlit Community Cloud:
-
-    streamlit run app/streamlit_app.py
-
-Models (deploy_models/) and assets (app/assets/) are loaded from the repo.
-No real patient data ships with the app — the demo data is anonymized or
-synthetic. This tool is for research demonstration only and is not a
-medical device.
+streamlit_app.py — research demo of the two-tier anaemia cascade (Streamlit). Run: streamlit run app/streamlit_app.py
+The models are TabPFN-3.5(-fast) fitted on SYNTHETIC data; see engine.py and README.md.
 """
+
 from __future__ import annotations
+
+import json
+import os
 import sys
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-APP_DIR = Path(__file__).parent
-ROOT = APP_DIR.parent
-sys.path.insert(0, str(APP_DIR))
-from cascade_engine import (  # noqa: E402
-    CascadeEngine, display_s2, display_diagnosis, clinical_narrative,
-    S2_CLASSES, S1_CLASSES,
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent))      # engine.py next to this file, whatever the cwd
+from engine import BIO, CLASS_LABEL, DATA, S2_CLASSES, Cascade  # noqa: E402
 
-MODELS_DIR = ROOT / "deploy_models"
-ASSETS_DIR = APP_DIR / "assets"
-DEMO_DIR = ASSETS_DIR / "demo_data"
+st.set_page_config(page_title="Anaemia cascade demo", page_icon="🩸", layout="wide")
+try:                                                    # licence key from the host's secrets (never in the code)
+    if "TABPFN_TOKEN" in st.secrets and not os.environ.get("TABPFN_TOKEN"):
+        os.environ["TABPFN_TOKEN"] = st.secrets["TABPFN_TOKEN"]
+except Exception:                                       # no secrets file (local run with the key in the environment)
+    pass
 
-# ── Raw input fields (label, unit, default, min, max, step) ──
-CBC_FIELDS = [
-    ("yas", "Age", "years", 45, 0, 120, 1),
-    ("hgb_g_d_l", "Hemoglobin (HGB)", "g/dL", 11.2, 2.0, 22.0, 0.1),
-    ("rbc_10_6_u_l", "RBC count", "10⁶/µL", 4.35, 1.0, 8.0, 0.01),
-    ("mcv_f_l", "MCV", "fL", 78.5, 40.0, 130.0, 0.1),
-    ("mchc_g_dl", "MCHC", "g/dL", 32.1, 24.0, 40.0, 0.1),
-    ("rdw_sd_fl", "RDW-SD", "fL", 48.0, 25.0, 110.0, 0.1),
-    ("ret_he_pg", "RET-He", "pg", 28.4, 10.0, 50.0, 0.1),
-    ("delta_he_pg", "Delta-He", "pg", -2.1, -15.0, 15.0, 0.1),
-    ("ret_number_10_6_l", "Reticulocyte # (RET#)", "10⁶/L", 0.045, 0.0, 0.5, 0.001),
-    ("irf_pct", "IRF", "%", 9.8, 0.0, 60.0, 0.1),
-    ("frc_perc", "FRC", "%", 0.6, 0.0, 10.0, 0.1),
-    ("nrbc_pct", "NRBC", "%", 0.0, 0.0, 10.0, 0.1),
-    ("micro_macro_ratio", "Micro/Macro ratio", "ratio", 1.85, 0.0, 100.0, 0.01),
+# (feature key, label, unit, group, step, factor input→feature, required)
+FIELDS = [
+    ("age", "Age", "years", "core", 1.0, 1, True),
+    ("hgb_g_d_l", "HGB", "g/dL", "core", 0.1, 1, True),
+    ("rbc_10_6_u_l", "RBC", "10⁶/µL", "core", 0.01, 1, True),
+    ("mcv_f_l", "MCV", "fL", "core", 0.1, 1, True),
+    ("mchc_g_dl", "MCHC", "g/dL", "core", 0.1, 1, True),
+    ("rdw_sd_fl", "RDW-SD", "fL", "core", 0.1, 1, True),
+    ("ret_number_10_6_l", "RET#", "10⁹/L", "core", 0.1, 1000, True),
+    ("irf_pct", "IRF", "%", "core", 0.1, 1, True),
+    ("ret_he_pg", "RET-He", "pg", "core", 0.1, 1, True),
+    ("delta_he_pg", "Delta-He", "pg", "core", 0.1, 1, True),
+    ("micro_r_pct", "MicroR", "%", "core", 0.1, 1, True),
+    ("macro_r_pct", "MacroR", "%", "core", 0.1, 1, True),
+    ("nrbc_pct", "NRBC%", "/100 WBC", "core", 0.1, 1, True),
+    ("frc_perc", "FRC% (research)", "%", "core", 0.01, 100, True),
+    ("hct_pct", "HCT", "%", "red", 0.1, 1, False),
+    ("mch_pg", "MCH", "pg", "red", 0.1, 1, False),
+    ("rdw_cv_pct", "RDW-CV", "%", "red", 0.1, 1, False),
+    ("ret_pct", "RET%", "%", "red", 0.01, 1, False),
+    ("lfr_pct", "LFR", "%", "red", 0.1, 1, False),
+    ("mfr_pct", "MFR", "%", "red", 0.1, 1, False),
+    ("hfr_pct", "HFR", "%", "red", 0.1, 1, False),
+    ("rbc_he_pg", "RBC-He", "pg", "red", 0.1, 1, False),
+    ("wbc_10_3_u_l", "WBC", "10³/µL", "white", 0.01, 1, False),
+    ("neut_number_10_3_u_l", "NEUT#", "10³/µL", "white", 0.01, 1, False),
+    ("lymph_number_10_3_u_l", "LYMPH#", "10³/µL", "white", 0.01, 1, False),
+    ("mono_number_10_3_u_l", "MONO#", "10³/µL", "white", 0.01, 1, False),
+    ("eo_number_10_3_u_l", "EO#", "10³/µL", "white", 0.01, 1, False),
+    ("baso_number_10_3_u_l", "BASO#", "10³/µL", "white", 0.01, 1, False),
+    ("ig_number_10_3_u_l", "IG#", "10³/µL", "white", 0.01, 1, False),
+    ("plt_10_3_u_l", "PLT", "10³/µL", "white", 1.0, 1, False),
+    ("mpv_fl", "MPV", "fL", "white", 0.1, 1, False),
+    ("pdw_fl", "PDW", "fL", "white", 0.1, 1, False),
+    ("p_lcr_pct", "P-LCR", "%", "white", 0.1, 1, False),
+    ("ret_y_ch", "RET-Y (research)", "ch", "research", 0.1, 1, False),
+    ("ret_rbc_y_ch", "RET-RBC-Y (research)", "ch", "research", 0.1, 1, False),
+    ("irf_y_ch", "IRF-Y (research)", "ch", "research", 0.1, 1, False),
+    ("ferritin", "Ferritin", "ng/mL", "bio", 0.1, 1, False),
+    ("iron", "Iron", "µg/dL", "bio", 1.0, 1, False),
+    ("uibc", "UIBC", "µg/dL", "bio", 1.0, 1, False),
+    ("ldh", "LDH", "U/L", "bio", 1.0, 1, False),
 ]
-BIO_FIELDS = [
-    ("ferritin", "Ferritin", "ng/mL", 18.0, 0.0, 2000.0, 1.0),
-    ("demir", "Serum iron", "µg/dL", 42.0, 0.0, 500.0, 1.0),
-    ("ldh", "LD", "U/L", 210.0, 0.0, 2000.0, 1.0),
-    ("uibc", "UIBC", "µg/dL", 310.0, 0.0, 600.0, 1.0),
-]
-
-ZONE_STYLE = {
-    "HIGH":     ("#1B998B", "Automatable — high confidence"),
-    "MEDIUM":   ("#E8A33D", "Technician review — moderate confidence"),
-    "LOW":      ("#C0392B", "Expert review — low confidence"),
-    "Excluded": ("#6B7280", "Not an associated anemia cause"),
-}
-URGENCY_STYLE = {"urgent": "#C0392B", "routine": "#1B6FB0", "none": "#6B7280"}
+GROUPS = {"core": "Thesis parameters (required)", "red": "Red cell and reticulocyte indices",
+          "white": "White cells and platelets", "research": "Research parameters",
+          "bio": "Biochemistry panel (Tier 2; optional)"}
+ZONE_TEXT = {"HIGH": "high confidence", "MEDIUM": "medium confidence", "LOW": "low confidence"}
+URGENCY = {"none": "—", "routine": "routine", "priority": "priority", "urgent": "urgent"}
+SHORT = {"IDA": "IDA", "HA": "HA", "HGB_HTZ": "HGB HTZ", "NORMAL": "Normal", "OAC": "OAC"}
 
 
-@st.cache_resource(show_spinner="Loading models…")
-def get_engine() -> CascadeEngine:
-    return CascadeEngine(MODELS_DIR, ASSETS_DIR)
+@st.cache_resource(show_spinner="Fitting the four models on the synthetic training set (first start only)…")
+def engine() -> Cascade:
+    return Cascade()
 
 
 @st.cache_data
-def load_demo(split: str, kind: str) -> pd.DataFrame:
-    return pd.read_csv(DEMO_DIR / f"{split}_{kind}.csv")
+def examples() -> dict:
+    return json.loads((DATA / "examples.json").read_text())
 
 
-def zone_badge(zone: str) -> str:
-    color, label = ZONE_STYLE.get(zone, ("#6B7280", zone))
-    return (
-        f"<span style='background:{color};color:#fff;padding:3px 12px;"
-        f"border-radius:14px;font-weight:600;font-size:0.85rem'>{zone}</span> "
-        f"<span style='color:#555;font-size:0.85rem'>{label}</span>"
-    )
+def load_example():
+    name = st.session_state.get("example")
+    ex = examples().get(name) if name in examples() else None
+    for f in FIELDS:
+        key, factor = f[0], f[5]
+        st.session_state[f"in_{key}"] = None if ex is None or ex.get(key) is None else round(ex[key] * factor, 4)
 
 
-def render_result(res: dict, engine, raw: dict, scenario: str):
-    s1 = res["stage1"]
+def read_inputs() -> dict:
+    x = {}
+    for key, label, unit, group, step, factor, req in FIELDS:
+        v = st.session_state.get(f"in_{key}")
+        x[key] = None if v is None else float(v) / factor
+    return x
+
+
+def tstr_table(t: pd.DataFrame) -> pd.DataFrame:
+    rows = [("Tier 1 · Stage 1 AUC", "A1_FULL_CBC_S1", "auc"), ("Tier 1 · Stage 1 sensitivity (classifiable)", "A1_FULL_CBC_S1", "sensitivity_aac"),
+            ("Tier 1 · Stage 2 macro AUC", "A1_FULL_CBC_S2", "auc"), ("Tier 1 · Stage 2 accuracy", "A1_FULL_CBC_S2", "accuracy"),
+            ("Tier 2 · Stage 1 AUC", "A1_FULL_CBC_BIO_S1", "auc"), ("Tier 2 · Stage 2 macro AUC", "A1_FULL_CBC_BIO_S2", "auc"),
+            ("Tier 2 · Stage 2 accuracy", "A1_FULL_CBC_BIO_S2", "accuracy"), ("Cascade · accuracy", "cascade", "accuracy"),
+            ("Cascade · share finalised at Tier 1", "cascade", "tier1_share"),
+            ("Cascade · accuracy of Tier 1 decisions", "cascade", "tier1_accuracy")]
+    out = []
+    for label, cfg, col in rows:
+        r = {"Measure": label}
+        for which, name in (("dev", "Development"), ("temporal", "Temporal")):
+            v = t.loc[(t["set"] == which) & (t["config"] == cfg), col] if col in t else pd.Series(dtype=float)
+            r[name] = "—" if v.empty or pd.isna(v.iloc[0]) else f"{v.iloc[0]:.3f}"
+        out.append(r)
+    return pd.DataFrame(out)
+
+
+def stage_panel(title: str, tier: dict):
+    s1, s2 = tier["stage1"], tier["stage2"]
+    st.markdown(f"#### {title}")
+    st.metric("Stage 1 · probability of a classifiable cause", f"{s1['p_display']:.2f}",
+              help="Probability shown after the locked display calibration. The decision uses the raw "
+                   f"score {s1['score']:.2f} against the locked threshold {s1['threshold']:.2f}.")
+    st.caption(("Classifiable cause (one of the four classes)" if s1["aac"] else "Another cause (OAC)")
+               + f" · raw score {s1['score']:.2f}, threshold {s1['threshold']:.2f}")
+    st.markdown("Stage 2 · class probabilities")
+    for c in sorted(s2["probs_display"], key=s2["probs_display"].get, reverse=True):
+        p = s2["probs_display"][c]
+        mark = " · in the 90 % conformal set" if c in s2["conformal_set"] else ""
+        st.progress(min(max(p, 0.0), 1.0), text=f"{CLASS_LABEL[c]} — {p:.2f}{mark}")
+    hc = s2["high_cutoff"]
+    high = (f"HIGH ≥ {hc:.2f}, the {eng.high_target * 100:.0f} % accuracy point" if hc is not None
+            else f"no HIGH zone: no cut-off reached {eng.high_target * 100:.0f} % accuracy")
+    st.caption(f"Stage 2 top class {SHORT[s2['top']]} · {ZONE_TEXT[s2['zone']]} "
+               f"({high}, LOW < 0.35 on the raw top-class score {s2['top_score']:.2f})")
+
+
+def show_pending(res: dict):
+    """Tier 1 while Tier 2 is still running."""
+    st.info("**Tier 1 did not finalise this case** · Tier 2 (with the biochemistry panel) is running…")
+    stage_panel("Tier 1 · full blood count only", res["tier1"])
+
+
+def show_result(res: dict):
+    chk = res["check"]
+    if not res["ok"]:
+        names = {f[0]: f[1] for f in FIELDS}
+        if chk["missing_required"]:
+            st.error("Missing required inputs: " + ", ".join(names.get(c, c) for c in chk["missing_required"]
+                                                             if c != "micro_macro_ratio")
+                     + (" (MicroR and MacroR)" if "micro_macro_ratio" in chk["missing_required"] else ""))
+        if chk["non_positive"]:
+            st.error("These inputs must be positive: " + ", ".join(names.get(c, c) for c in chk["non_positive"]))
+        return
     fin = res["final"]
+    rec = fin["recommendation"]
+    head = (f"Tier {fin['tier']} · rule {fin['rule']}"
+            + (f" · {CLASS_LABEL[fin['class']]}" if fin.get("class") else ""))
+    box = st.success if fin["tier"] == 1 and not fin.get("needs_biochemistry") else st.info
+    box(f"**{head}**  \n**Recommended next step:** {rec['recommended_test']}  \n"
+        f"Urgency: {URGENCY.get(rec['urgency'], rec['urgency'])} · {rec['rationale']}")
+    if fin.get("needs_biochemistry"):
+        st.caption("Tier 1 did not finalise this case. Enter the biochemistry panel (at least one analyte; "
+                   "missing analytes are imputed as in the study) to run Tier 2.")
+    stage_panel("Tier 1 · full blood count only", res["tier1"])
+    if "tier2" in res:
+        t2 = res["tier2"]
+        stage_panel("Tier 2 · full blood count + biochemistry", t2)
+        if t2["imputed"]:
+            st.caption("Imputed (KNN, as in the study): " + ", ".join(t2["imputed"]))
+    if chk["outside_training_range"] or chk["absent_optional"]:
+        names = {f[0]: f[1] for f in FIELDS}
+        with st.expander("Input notes"):
+            if chk["outside_training_range"]:
+                st.write("Outside the range of the training data (less reliable): "
+                         + ", ".join(names.get(c, c) for c in chk["outside_training_range"]))
+            if chk["absent_optional"]:
+                st.write("Not entered (treated as missing): "
+                         + ", ".join(names.get(c, c) for c in chk["absent_optional"] if c in names))
+    st.caption(f"Computed in {res['seconds']} s on CPU.")
 
-    # ── Stage 1 ──
-    st.markdown("#### Stage 1 — Associated vs Other Anemia Cause")
-    c1, c2 = st.columns([1, 1])
-    c1.metric("Stage 1 call", s1["pred_display"],
-              help=f"Decision threshold {s1['threshold']} on P(AAC)")
-    c2.metric("P(AAC)", f"{s1['p_AAC']:.1%}")
-    st.progress(min(max(s1["p_AAC"], 0.0), 1.0))
-    if s1["conformal_set"]:
-        st.caption(f"Conformal set (α={res['alpha']}): "
-                   + ", ".join(s1["conformal_set"]))
 
-    if not res["escalated"]:
-        st.markdown("---")
-        st.markdown("#### Result")
-        st.markdown(zone_badge("Excluded"), unsafe_allow_html=True)
-        st.info("Classified as **OAC** (Other Anemia Cause) at Stage 1. "
-                "The four-subtype Stage 2 model is not applied; further "
-                "non-anemia workup is indicated.")
-        render_reflex(fin.get("reflex"))
-        render_narrative(res)
-        return
 
-    # ── Stage 2 ──
-    st.markdown("---")
-    st.markdown("#### Stage 2 — Anemia subtype")
-    s2 = res["stage2"]
-    prob_df = (
-        pd.DataFrame({"Subtype": list(s2["probs"].keys()),
-                      "Probability": list(s2["probs"].values())})
-        .sort_values("Probability", ascending=False)
-        .reset_index(drop=True)
-    )
-    cc1, cc2 = st.columns([1, 1.3])
-    with cc1:
-        st.metric("Stage 2 call", s2["pred_display"])
-        st.markdown(zone_badge(s2["zone"]), unsafe_allow_html=True)
-        st.caption(
-            f"Confidence {s2['confidence']:.1%} "
-            f"(zones: LOW <{s2['zone_low']} ≤ MEDIUM < {s2['zone_high']} ≤ HIGH)"
-        )
-        if s2["conformal_set"]:
-            st.caption(f"Conformal set (α={res['alpha']}): "
-                       + ", ".join(s2["conformal_set"]))
-    with cc2:
-        st.bar_chart(prob_df.set_index("Subtype"), height=210)
+# ───────────────────────────────────────────────────────────── page
+st.title("Two-tier anaemia cascade · research demo")
+st.warning("**Research demonstration, not a medical device.** The models were trained on a synthetic data set "
+           "drawn from the study's class-wise distributions; no patient data are contained in or used by this app. "
+           "Outputs are not the study model's and must not be used for patient care.", icon="⚠️")
 
-    st.markdown("---")
-    st.markdown("#### Result")
-    color, _ = ZONE_STYLE.get(fin["zone"], ("#6B7280", ""))
+try:
+    eng = engine()
+except Exception as e:                                                     # weights or token missing
+    st.error(f"The models could not be loaded: {type(e).__name__}: {e}")
+    st.stop()
+if eng.backend != "tabpfn":
+    st.error(f"Interface test backend '{eng.backend}' (not TabPFN) with a '{eng.lock_engine}' lock: "
+             "probabilities are not meaningful.")
+
+with st.sidebar:
+    st.header("Inputs")
+    st.selectbox("Load a synthetic example", ["—"] + list(examples()), key="example", on_change=load_example,
+                 format_func=lambda k: k if k == "—" else f"{CLASS_LABEL[k]} ({examples()[k]['record_id']})",
+                 help="Examples are synthetic records, chosen near the middle of their class.")
+    st.button("Clear all inputs", on_click=lambda: [st.session_state.update({f"in_{f[0]}": None}) for f in FIELDS])
+    st.caption("Sysmex XN units as exported. Leave optional fields empty if not measured; "
+               "MicroR/MacroR and NRBC# are computed by the app.")
+
+left, right = st.columns([3, 2], gap="large")
+with left, st.form("inputs"):
+    for g, title in GROUPS.items():
+        with st.expander(title, expanded=g in ("core", "bio")):
+            fs = [f for f in FIELDS if f[3] == g]
+            for i, (key, label, unit, group, step, factor, req) in enumerate(fs):
+                if i % 3 == 0:                                   # one row per three fields (keeps the order on phones)
+                    cols = st.columns(3)
+                cols[i % 3].number_input(f"{label} ({unit})", value=None, step=step, key=f"in_{key}",
+                                         format="%.4f" if step < 0.1 else ("%.2f" if step < 1 else "%.1f"),
+                                         placeholder="required" if req else "optional")
+    run = st.form_submit_button("Run the cascade", type="primary", width="stretch")
+
+with right:
+    st.subheader("Result")
+    result_box = st.empty()
+    if run:                                             # Tier 1 first, shown while Tier 2 runs (CPU: ~20 s each)
+        with result_box.container(), st.spinner("Tier 1 · full blood count… (about 20 s on the free server)"):
+            res = eng.start(read_inputs())
+        if res["ok"] and "final" not in res:
+            with result_box.container():
+                show_pending(res)
+                with st.spinner("Tier 2 · adding the biochemistry panel… (about 20 s)"):
+                    res = eng.finish(res)
+        else:
+            res = eng.finish(res)
+        st.session_state["result"] = res
+    res = st.session_state.get("result")
+    with result_box.container():
+        if res is None:
+            st.info("Load a synthetic example from the sidebar or type a full blood count, then run the cascade.")
+        else:
+            show_result(res)
+with st.expander("About this demo"):
     st.markdown(
-        f"<div style='font-size:1.3rem;font-weight:700'>{fin['label_display']}"
-        f"&nbsp;&nbsp;{zone_badge(fin['zone'])}</div>",
-        unsafe_allow_html=True,
-    )
-    render_reflex(fin.get("reflex"))
-    render_narrative(res)
-    render_shap_section(res, engine, raw, scenario)
-
-
-def render_narrative(res: dict):
-    st.markdown("##### Clinical narrative")
-    st.markdown(
-        f"<div style='padding:8px 14px;background:#f4f4f6;border-radius:6px;"
-        f"color:#333'>{clinical_narrative(res)}</div>",
-        unsafe_allow_html=True,
-    )
-
-
-def render_shap_section(res: dict, engine, raw: dict, scenario: str):
-    """On-demand SHAP explanation for the predicted class (KernelExplainer)."""
-    st.markdown("---")
-    st.markdown("##### Feature attribution (SHAP)")
-    stage = res["final"]["tier"]
-    pred_internal = res["final"]["label_internal"]
-    if stage == 1:
-        ci = 1  # explain P(IAS)
-        klass = res["stage1"]["pred_display"]
-    else:
-        ci = next(k for k, v in S2_CLASSES.items() if v == pred_internal)
-        klass = res["stage2"]["pred_display"]
-
-    st.caption(
-        f"Top features driving the **{klass}** prediction "
-        f"(Tier {stage}). Computed on demand — takes a few seconds."
-    )
-    if st.button("Compute SHAP explanation", key="shap_btn"):
-        with st.spinner("Computing SHAP values…"):
-            try:
-                shap_df = engine.explain(
-                    raw, scenario=scenario, stage=stage,
-                    class_index=ci, top_k=10, n_background=20,
-                )
-            except Exception as e:  # noqa: BLE001
-                st.warning(f"SHAP computation could not complete: {e}")
-                return
-        st.pyplot(_shap_figure(shap_df, klass, scenario))
-        st.caption(
-            "Bars show signed SHAP values (impact on the predicted class "
-            "probability). Positive values push toward the prediction."
-        )
-
-
-def _shap_figure(shap_df, klass: str, scenario: str):
-    """Horizontal sorted SHAP bar chart, styled like the manuscript figure."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    df = shap_df.copy()
-    df["abs"] = df["shap_value"].abs()
-    df = df.sort_values("abs", ascending=True)  # smallest at bottom -> largest on top
-
-    pos = "#C0392B"   # ruby red (positive)
-    neg = "#6B7280"   # gray (negative)
-    colors = [pos if v >= 0 else neg for v in df["shap_value"]]
-
-    fig, ax = plt.subplots(figsize=(7, 4.2))
-    bars = ax.barh(df["feature_display"], df["shap_value"], color=colors,
-                   height=0.66)
-    for bar, val in zip(bars, df["shap_value"]):
-        ax.text(bar.get_width() + (0.002 if val >= 0 else -0.002),
-                bar.get_y() + bar.get_height() / 2,
-                f"{val:+.3f}", va="center",
-                ha="left" if val >= 0 else "right",
-                fontsize=8, color="#333")
-    scen_txt = "CBC+BIO" if scenario == "CBC_BIO" else "CBC only"
-    ax.set_title(f"SHAP — Top features for {klass} ({scen_txt})",
-                 fontsize=11, fontweight="bold", pad=10)
-    ax.set_xlabel("SHAP value (impact on prediction)", fontsize=9)
-    ax.axvline(0, color="#999", linewidth=0.8)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(labelsize=8)
-    fig.tight_layout()
-    return fig
-
-
-def render_reflex(reflex: dict | None):
-    if not reflex:
-        st.caption("No reflex recommendation matched.")
-        return
-    ucolor = URGENCY_STYLE.get(reflex.get("urgency", ""), "#6B7280")
-    st.markdown("##### Reflex recommendation")
-    st.markdown(
-        f"<div style='border-left:4px solid {ucolor};padding:8px 14px;"
-        f"background:#fafafa'>"
-        f"<b>{reflex['test']}</b><br>"
-        f"<span style='color:{ucolor};font-weight:600;text-transform:uppercase;"
-        f"font-size:0.8rem'>{reflex.get('urgency','')}</span>"
-        f"<span style='color:#666'> · {reflex.get('rationale','')}</span>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-
-
-# ════════════════════════════════════════════════════════════════════
-def main():
-    st.set_page_config(page_title="Anemia Cascade CDS", page_icon="🩸",
-                       layout="wide")
-    st.title("Anemia Cascade CDS")
-    st.caption(
-        "Two-stage clinical decision support for anemia subtype "
-        "classification · research demonstration, not a medical device."
-    )
-
-    with st.sidebar:
-        st.header("Configuration")
-        scenario = st.radio(
-            "Scenario",
-            ["CBC_BIO", "CBC_Only"],
-            format_func=lambda s: "CBC + biochemistry" if s == "CBC_BIO" else "CBC only",
-            help="CBC+biochemistry adds ferritin, iron, LD and UIBC.",
-        )
-        alpha = st.select_slider(
-            "Conformal α (1 − coverage)",
-            options=[0.05, 0.10, 0.20], value=0.10,
-            help="Smaller α → wider prediction sets, higher coverage.",
-        )
-        st.markdown("---")
-        mode = st.radio("Input", ["Demo patient", "Manual entry"])
-
-    engine = get_engine()
-    needs_bio = scenario == "CBC_BIO"
-    fields = CBC_FIELDS + (BIO_FIELDS if needs_bio else [])
-
-    raw = {}
-    if mode == "Demo patient":
-        cda, cdb, cdc = st.columns(3)
-        split = cda.selectbox("Cohort", ["test", "train", "temporal"], index=0)
-        kind = cdb.selectbox(
-            "Data type", ["real_anon", "synthetic"],
-            format_func=lambda k: "Anonymized real" if k == "real_anon" else "Synthetic",
-            help="Anonymized real patients (edge cases) or privacy-safe synthetic.",
-        )
-        df = load_demo(split, kind)
-        idx = cdc.selectbox(
-            "Patient", df.index,
-            format_func=lambda i: f"{df.loc[i,'sample_id']} · true: "
-            f"{display_diagnosis(df.loc[i,'DIAGNOSIS']) if df.loc[i,'DIAGNOSIS'] in ('IDA','HA','HGB_HTZ','NORMAL') else 'OAC'}",
-        )
-        row = df.loc[idx]
-        raw = {f[0]: float(row[f[0]]) for f in fields if f[0] in row}
-        with st.expander("Raw values for this patient"):
-            st.dataframe(
-                pd.DataFrame({"value": {f[1]: row.get(f[0]) for f in fields}}),
-                use_container_width=True,
-            )
-        true_label = row.get("DIAGNOSIS")
-    else:
-        st.markdown("Enter raw measured values:")
-        true_label = None
-        cols = st.columns(3)
-        for n, (key, label, unit, dflt, lo, hi, step) in enumerate(fields):
-            with cols[n % 3]:
-                raw[key] = st.number_input(
-                    f"{label} ({unit})", value=float(dflt),
-                    min_value=float(lo), max_value=float(hi), step=float(step),
-                )
-
-    st.markdown("")
-    if st.button("Run cascade", type="primary", use_container_width=True):
-        with st.spinner("Running cascade…"):
-            res = engine.run(raw, scenario=scenario, alpha=alpha)
-        # persist so the in-result SHAP button doesn't wipe the output on rerun
-        st.session_state["last_result"] = res
-        st.session_state["last_raw"] = raw
-        st.session_state["last_scenario"] = scenario
-        st.session_state["last_true"] = true_label
-
-    if "last_result" in st.session_state:
-        res = st.session_state["last_result"]
-        render_result(
-            res,
-            engine,
-            st.session_state["last_raw"],
-            st.session_state["last_scenario"],
-        )
-        lt = st.session_state.get("last_true")
-        if lt is not None:
-            shown = (display_diagnosis(lt)
-                     if lt in ("IDA", "HA", "HGB_HTZ", "NORMAL") else "OAC")
-            st.caption(f"Reference label for this demo patient: **{shown}** "
-                       "(not used by the model).")
-
-    st.markdown("---")
-    st.caption(
-        "Internal class codes are preserved as trained; AAC/OAC/IDA/HGB HTZ are "
-        "display labels. Demo data contains no identifiable patient information."
-    )
-
-
-if __name__ == "__main__":
-    main()
+        "**Cascade.** Tier 1 uses the full blood count only. Stage 1 separates anaemias with a classifiable cause "
+        "(iron deficiency, haemolytic anaemia, heterozygous haemoglobinopathy, normal red cell profile) from other "
+        "causes; Stage 2 assigns one of the four. A case is finalised at Tier 1 when Stage 1 says classifiable and "
+        "the Stage 2 top-class probability reaches the HIGH cut-off; otherwise the biochemistry panel (ferritin, "
+        "iron, UIBC, LDH) is added and Tier 2 decides. Recommendations follow the study's 14 reflex rules.\n\n"
+        f"**Models.** {eng.model_label} (Prior Labs), one model per stage and tier, with the feature lists selected "
+        "in the study (the study itself used TabPFN-3.5 with its default ensemble; the lighter version keeps this "
+        "demo responsive on a small server). Thresholds, confidence zones, 90 % conformal sets (APS, conservative "
+        "version) and the display calibration were locked with the study's rules on real development patients, "
+        "each predicted by a model of the same kind trained on synthetic data generated without that patient "
+        "(5 folds; the synthetic copy of four folds predicted the fifth). Only these cut-offs and two-parameter "
+        "calibrations are stored; no patient-level value is.\n\n"
+        f"**One rule differs from the study.** The HIGH cut-off is the {eng.high_target * 100:.0f} % accuracy point "
+        "(study: 90 %). Models trained on synthetic data are less accurate on real patients than the study model, "
+        "and none of them reached 90 % accuracy at any cut-off; with the study's rule this demo would never "
+        "finalise a case at Tier 1.\n\n"
+        f"**Training data.** {eng.n_train['synthetic_patients']} synthetic records "
+        f"({eng.n_train['with_biochemistry']} with biochemistry), generated class by class with a Gaussian copula; "
+        "no real record is contained. Analyzer identities (HCT, HGB, MCH, RET%, LFR/MFR, RBC-He, WBC) are kept.\n\n"
+        "**Licence.** TabPFN-3.5 weights are under the non-commercial TabPFN-3.5 licence; this demo is for research use.")
+    tp = DATA / "tstr_summary.csv"
+    if tp.exists():
+        st.markdown("**On the real patients.** Development (863 patients): the cross-generation predictions above "
+                    "(the cut-offs were chosen on them, so the cascade figures are slightly optimistic). Temporal "
+                    "(97 patients): this app's models, trained on the whole synthetic set, on an independent later "
+                    "cohort (no other-cause patients, so Stage 1 AUC is not defined there). Cascade figures are for "
+                    "patients with the biochemistry panel measured.")
+        st.dataframe(tstr_table(pd.read_csv(tp)), hide_index=True, width="stretch")

@@ -1,0 +1,128 @@
+[
+ {
+  "rule": "T1-1",
+  "tier": 1,
+  "predicted_class": "IDA",
+  "zone": "HIGH",
+  "recommended_test": "Ferritin + serum iron + TIBC/UIBC",
+  "urgency": "routine",
+  "rationale": "Confirm iron deficiency before treatment"
+ },
+ {
+  "rule": "T1-2",
+  "tier": 1,
+  "predicted_class": "HA",
+  "zone": "HIGH",
+  "recommended_test": "LD + indirect bilirubin + haptoglobin + peripheral smear + direct antiglobulin test",
+  "urgency": "urgent",
+  "rationale": "Confirm haemolysis and screen for an immune cause (most HA in this cohort was autoimmune)"
+ },
+ {
+  "rule": "T1-3",
+  "tier": 1,
+  "predicted_class": "HGB HTZ",
+  "zone": "HIGH",
+  "recommended_test": "Haemoglobin HPLC / electrophoresis",
+  "urgency": "routine",
+  "rationale": "Confirm the haemoglobinopathy carrier state"
+ },
+ {
+  "rule": "T1-4",
+  "tier": 1,
+  "predicted_class": "Normal",
+  "zone": "HIGH",
+  "recommended_test": "No additional testing",
+  "urgency": "none",
+  "rationale": "High-confidence normal red cell profile"
+ },
+ {
+  "rule": "T1-5",
+  "tier": 1,
+  "predicted_class": "any",
+  "zone": "MEDIUM",
+  "recommended_test": "Biochemistry panel (ferritin, iron, UIBC, LD) -> Tier 2",
+  "urgency": "routine",
+  "rationale": "Not resolved by the CBC: escalate"
+ },
+ {
+  "rule": "T1-6",
+  "tier": 1,
+  "predicted_class": "any",
+  "zone": "LOW",
+  "recommended_test": "Biochemistry panel (ferritin, iron, UIBC, LD) -> Tier 2",
+  "urgency": "priority",
+  "rationale": "Low confidence: escalate and flag for review"
+ },
+ {
+  "rule": "T1-7",
+  "tier": 1,
+  "predicted_class": "OAC",
+  "zone": "-",
+  "recommended_test": "Biochemistry panel (ferritin, iron, UIBC, LD) -> Tier 2",
+  "urgency": "routine",
+  "rationale": "Stage 1 predicts another cause: verify with biochemistry"
+ },
+ {
+  "rule": "T2-1",
+  "tier": 2,
+  "predicted_class": "IDA",
+  "zone": "HIGH",
+  "recommended_test": "Clinical evaluation for iron therapy; repeat CBC after treatment",
+  "urgency": "routine",
+  "rationale": "Iron deficiency supported by CBC and iron studies"
+ },
+ {
+  "rule": "T2-2",
+  "tier": 2,
+  "predicted_class": "HA",
+  "zone": "HIGH",
+  "recommended_test": "Haemolysis work-up (indirect bilirubin, haptoglobin, smear, DAT) + haematology consultation",
+  "urgency": "urgent",
+  "rationale": "Haemolysis supported by CBC and LD: investigate the cause"
+ },
+ {
+  "rule": "T2-3",
+  "tier": 2,
+  "predicted_class": "HGB HTZ",
+  "zone": "HIGH",
+  "recommended_test": "Haemoglobin HPLC / electrophoresis; if HbA2 is normal and iron is replete, alpha-globin molecular testing; genetic counselling",
+  "urgency": "routine",
+  "rationale": "Carrier state likely; alpha-thalassaemia trait can have a normal HPLC"
+ },
+ {
+  "rule": "T2-4",
+  "tier": 2,
+  "predicted_class": "Normal",
+  "zone": "HIGH",
+  "recommended_test": "No additional testing",
+  "urgency": "none",
+  "rationale": "Normal profile with full biochemistry"
+ },
+ {
+  "rule": "T2-5",
+  "tier": 2,
+  "predicted_class": "OAC",
+  "zone": "-",
+  "recommended_test": "Investigate other causes (CRP, creatinine/eGFR, vitamin B12, folate, reticulocyte response)",
+  "urgency": "routine",
+  "rationale": "Not one of the four classes after biochemistry"
+ },
+ {
+  "rule": "T2-6",
+  "tier": 2,
+  "predicted_class": "any",
+  "zone": "MEDIUM",
+  "recommended_test": "Specialist review of the CBC, smear and biochemistry",
+  "urgency": "routine",
+  "rationale": "Still uncertain after biochemistry: human review"
+ },
+ {
+  "rule": "T2-7",
+  "tier": 2,
+  "predicted_class": "any",
+  "zone": "LOW",
+  "recommended_test": "Specialist review + extended work-up",
+  "urgency": "priority",
+  "rationale": "Low confidence after biochemistry"
+ }
+]
