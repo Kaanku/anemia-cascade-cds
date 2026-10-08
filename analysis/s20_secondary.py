@@ -18,7 +18,8 @@ feature selection, locking or evaluation. Here it is scored by the final models 
                    final_temporal_refit.parquet, runs_tabpfn35/secondary__<cfg>.json
     eval  (local)  refit check against the stored temporal predictions; the locked final choices of
                    lock.json (Stage 1 threshold, Stage 2 HIGH cut-off, LOW < 0.35, APS quantiles) applied
-                   unchanged -> reports/extra/secondary_set.csv, secondary_set_patients.csv (internal)
+                   unchanged; Tier 2 is summarised, as in the cascade, for the patients Tier 1 escalated
+                   -> reports/extra/secondary_set.csv, secondary_set_patients.csv (internal)
 
 Usage:
     python s20_secondary.py --phase prep --out /path/to/CDS_v43
@@ -160,10 +161,14 @@ def evaluate(out: Path) -> None:
                      "s2_low": int((g["s1_aac"] & (g["s2_zone"] == "LOW")).sum()),
                      "tier1_finalised": int(g["tier1_final"].sum()),
                      "tier1_classes": "; ".join(f"{k} {v}" for k, v in g.loc[g["tier1_final"], "s2_class"].value_counts().items()),
-                     "with_biochemistry": int(g["t2_class"].notna().sum()),
-                     "tier2_oac": int((g["t2_class"] == "OAC").sum()),
-                     "tier2_high": int((g["t2_zone"] == "HIGH").sum()),
-                     "tier2_medium_low": int(g["t2_zone"].isin(["MEDIUM", "LOW"]).sum()),
+                     # Tier 2 as in the cascade: escalated patients (not finalised at Tier 1) with biochemistry
+                     "escalated": int((~g["tier1_final"]).sum()),
+                     "escalated_with_biochemistry": int((~g["tier1_final"] & g["t2_class"].notna()).sum()),
+                     "tier2_oac": int((~g["tier1_final"] & (g["t2_class"] == "OAC")).sum()),
+                     "tier2_high": int((~g["tier1_final"] & (g["t2_zone"] == "HIGH")).sum()),
+                     "tier2_high_classes": "; ".join(f"{k} {v}" for k, v in g.loc[~g["tier1_final"] & (g["t2_zone"] == "HIGH"),
+                                                                                    "t2_class"].value_counts().items()),
+                     "tier2_medium_low": int((~g["tier1_final"] & g["t2_zone"].isin(["MEDIUM", "LOW"])).sum()),
                      "median_set_size_cbc": float(g["set_size_cbc"].median())})
     od = out / "reports" / "extra"
     od.mkdir(parents=True, exist_ok=True)

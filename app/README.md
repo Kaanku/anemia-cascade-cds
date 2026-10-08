@@ -72,7 +72,7 @@ classes.
   extra package. With at least 2^p − 2 coalitions it returns exact Shapley values; `test_kernel_shap.py`
   checks this against brute-force enumeration.
 * **Cost and accuracy** (Colab CPU, 2 threads, TabPFN-3.5-fast with 2 ensemble members, `time_app.py`): 14–17 s
-  per explanation and about 2.3 GB peak memory. Against a 4,096-coalition reference, 9 of the 10 largest values
+  per explanation and about 2.3 GB peak memory; about 7 s on the Streamlit Community Cloud server. Against a 4,096-coalition reference, 9 of the 10 largest values
   were the same in both examples tested, and the largest absolute difference was 0.03.
 * The values explain the raw model output (the score compared with the threshold and the HIGH cut-off), not
   the calibrated probability on display, and they describe this demo model, not the study model. The study's

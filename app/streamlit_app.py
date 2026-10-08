@@ -79,7 +79,7 @@ MODEL_NAME = {"cbc_s1": "Tier 1 · Stage 1 (classifiable cause or not)", "cbc_s2
               "bio_s1": "Tier 2 · Stage 1 (classifiable cause or not)", "bio_s2": "Tier 2 · Stage 2 (which class)"}
 INFO = {f[0]: (f[1], f[2], f[5]) for f in FIELDS}             # key → label, unit, factor input/feature
 SHAP_COLOURS = ("#C0392B", "#4F72B8", "#9AA0A6")              # raises, lowers, the other values
-SHAP_TIME = os.environ.get("CDS_SHAP_TIME", "about 20 s")      # on a 2-core CPU (measured, see README)
+SHAP_TIME = os.environ.get("CDS_SHAP_TIME", "up to about 20 s")   # 7 s on the free server, 14–17 s on Colab CPU
 
 
 @st.cache_resource(show_spinner="Fitting the four models on the synthetic training set (first start only)…")
@@ -259,9 +259,11 @@ def shap_section(res: dict):
     cache = st.session_state.setdefault("shap", {})
     ck = (res.get("run_id"), key)
     if ck not in cache:
-        if not st.button("Compute SHAP explanation", key="shap_button"):
+        slot = st.empty()                                                  # the button goes once it is used
+        if not slot.button("Compute SHAP explanation", key="shap_button"):
             st.caption(f"Shapley values of the entered values for this model; {SHAP_TIME} on the free server.")
             return
+        slot.empty()
         with st.spinner(f"Computing SHAP values ({SHAP_BUDGET} coalitions; {SHAP_TIME})…"):
             try:
                 cache[ck] = eng.explain(res, key)

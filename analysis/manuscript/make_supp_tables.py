@@ -201,7 +201,7 @@ rows = []
 for a, b, c in ST:
     rows.append([a, "", ""] if b is None else [a, b, c])
 add("S1", "Table S1. STARD-AI checklist.", ["Item", "STARD-AI item", "Reported in"], rows, [
-    "* New item relative to STARD 2015; † modified item. Item wording abridged from Sounderajah et al. [S2]; rows without "
+    "* New item relative to STARD 2015; † modified item. Item wording abridged from Sounderajah et al. [S3]; rows without "
     "an item number are section headings. AUC, area under the receiver operating characteristic curve; CBC, complete "
     "blood count; HGB HTZ, heterozygous hemoglobinopathy; OAC, other anemia causes."])
 tables[-1]["section_rows"] = True
@@ -614,7 +614,7 @@ for sset in ("nested CV", "temporal"):
                               "Accuracy, %", "P vs model (McNemar, Holm)"], "rows": rows})
 add("S13", "Table S13. Iron deficiency anemia versus heterozygous hemoglobinopathy: the model and seven discriminant indices.",
     None, None, [
-        "Patients with IDA or HGB HTZ (first samples). Indices at their published cut-offs (nothing fitted) [S3]; MCH and "
+        "Patients with IDA or HGB HTZ (first samples). Indices at their published cut-offs (nothing fitted) [S4]; MCH and "
         "RDW-CV from the analyzer record. Holm correction across the seven comparisons within each panel and subgroup.",
         "AUC, area under the receiver operating characteristic curve; Hb, hemoglobin (g/dL); HGB HTZ, heterozygous "
         "hemoglobinopathy; IDA, iron deficiency anemia; MCH, mean corpuscular hemoglobin (pg); MCV, mean corpuscular volume "
@@ -857,19 +857,22 @@ if (SEC / "secondary_set.csv").exists():
         r = ss.loc[key]
         rows.append([lab, str(int(r.n)), str(int(r.stage1_oac)), f"{int(r.s2_high)} / {int(r.s2_medium)} / {int(r.s2_low)}",
                      f"{int(r.tier1_finalised)}" + (f" ({cls_list(r.tier1_classes)})" if int(r.tier1_finalised) else ""),
-                     str(int(r.with_biochemistry)), f"{int(r.tier2_oac)} / {int(r.tier2_high)} / {int(r.tier2_medium_low)}",
+                     f"{int(r.escalated)} ({int(r.escalated_with_biochemistry)})",
+                     f"{int(r.tier2_oac)} / {int(r.tier2_high)}" + (f" ({cls_list(r.tier2_high_classes)})" if int(r.tier2_high) else "")
+                     + f" / {int(r.tier2_medium_low)}",
                      fr(r.median_set_size_cbc, 0)])
     add("S19", "Table S19. The frozen final models applied to the secondary set (59 patients outside the four target classes).",
         ["Category", "n", "Stage 1 OAC", "Stage 1 AAC: Stage 2 HIGH / MEDIUM / LOW", "Finalized at Tier 1 (class)",
-         "Biochemistry measured", "Tier 2: OAC / HIGH / MEDIUM or LOW", "Median CBC set size, α = 0.10"], rows, [
+         "Escalated (with biochemistry)", "Tier 2: OAC / HIGH (class) / MEDIUM or LOW", "Median CBC set size, α = 0.10"], rows, [
             "Post hoc, exploratory. First sample of each secondary-set patient, scored by the final models (A1, full feature "
             "set) with the locked final decisions (Stage 1 threshold, HIGH cut-off, LOW <0.35, conformal quantile); the "
-            "Tier 2 columns refer to the patients with biochemistry measured. These patients belong to none of the four "
+            "Tier 2 column refers to the escalated patients with biochemistry measured. These patients belong to none of the four "
             "target classes: a Stage 1 OAC result or a MEDIUM or LOW Stage 2 zone sends them to Tier 2, whereas a Tier 1 "
-            "finalization assigns one of the target classes (for homozygous hemoglobinopathy and combined deficiency, a "
-            "related class). The final models were "
-            f"refitted for this analysis and reproduced the stored temporal predictions (maximum absolute difference in "
-            f"probability {num(chk.max_abs_dp.max(), 4)}; agreement of the predicted class {fr(100 * chk.argmax_agreement.min(), 1)}% or more).",
+            "finalization assigns one of the target classes, at best a related one (HGB HTZ for a homozygous "
+            "hemoglobinopathy). The final models were refitted for this analysis and "
+            + ("reproduced the stored temporal predictions exactly." if chk.max_abs_dp.max() == 0 and chk.argmax_agreement.min() == 1
+               else f"reproduced the stored temporal predictions (maximum absolute difference in probability "
+                    f"{num(chk.max_abs_dp.max(), 4)}; predicted class agreement {fr(100 * chk.argmax_agreement.min(), 1)}% or more)."),
             "AAC, associated anemia causes; HA, hemolytic anemia; HGB HTZ, heterozygous hemoglobinopathy; IDA, iron deficiency "
             "anemia; OAC, other anemia causes."], landscape=True)
 else:
