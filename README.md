@@ -6,12 +6,15 @@ manuscript under review.
 
 > **Research use only. Not a medical device.**
 
+**Demo:** <https://anemia-cascade-cds-2z85cbsumfyft2ckde6y75.streamlit.app> (models trained on synthetic data)
+
 ## Contents
 
 | Folder | Content |
 |---|---|
-| `app/` | Interactive research demo (Streamlit). TabPFN-3.5-fast models trained on a **synthetic** cohort; decisions locked with the study's rules on real development patients. See [`app/README.md`](app/README.md). |
-| `notebooks/`, `src/` | Analysis notebooks and modules of the earlier analysis (M1–M11). |
+| `app/` | Interactive research demo (Streamlit). TabPFN-3.5-fast models trained on a **synthetic** cohort; decisions locked with the study's rules on real development patients; SHAP explanation of each result. See [`app/README.md`](app/README.md). |
+| `analysis/` | The analysis code of the manuscript: cohort, features, nested cross-validation (TabPFN-3.5; AutoGluon as comparator), locked decisions, evaluation, Shapley values, sensitivity analyses, the demo's synthetic cohort, and the manuscript's tables and figures. See [`analysis/README.md`](analysis/README.md). |
+| `legacy/` | Notebooks and modules of an earlier version of the analysis (M1–M11), kept for reference. |
 
 ## The cascade
 
@@ -25,8 +28,9 @@ manuscript under review.
 
 ## Data availability
 
-Patient data are not shared (ethics approval). The demo is trained on synthetic data only; the synthetic
-cohort, its generation and its privacy, fidelity and utility checks are described in `app/README.md`.
+Patient data are not shared (ethics approval). The analysis code is in `analysis/`; it runs on the original
+data only. The demo is trained on synthetic data only; the synthetic cohort, its generation and its privacy,
+fidelity and utility checks are described in `app/README.md`.
 
 ## Running the demo
 

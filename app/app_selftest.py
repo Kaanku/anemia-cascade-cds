@@ -3,7 +3,8 @@ app_selftest.py — end-to-end check of the demo engine with the real TabPFN bac
 =====================================================================================================
 
 Loads the cascade exactly as the app does (synthetic training data, locked JSON), runs every example and a
-case without biochemistry, checks the outputs for consistency and prints wall times. Run on the deployment
+case without biochemistry, explains the model that set each result (SHAP), checks the outputs for consistency
+and prints wall times. Run on the deployment
 target or any CPU machine with the TabPFN-3.5 weights (TABPFN_TOKEN set).
 
 Usage: python app/app_selftest.py
@@ -47,19 +48,28 @@ for name, ex in examples.items():
             if r["tier1"]["stage2"]["top"] != name:
                 print(f"  check: Tier 1 Stage 2 top class {r['tier1']['stage2']['top']} for the {name} example", flush=True)
         fin = r["final"]
+        key = ("bio_s1" if fin["rule"] == "T2-5" else "bio_s2") if fin["tier"] == 2 else \
+              ("cbc_s1" if fin["rule"] == "T1-7" else "cbc_s2")              # the model that set the result
+        xp = eng.explain(r, key)
+        phi = np.asarray(xp["phi"])
+        assert np.abs(phi.sum(0) - (np.asarray(xp["f_x"]) - np.asarray(xp["f_ref"]))).max() < 1e-6, "efficiency"
+        assert xp["check_vs_cascade"] < 1e-4, ("SHAP model output differs from the cascade", xp["check_vs_cascade"])
         out[f"{name} / {variant}"] = {"rule": fin["rule"], "class": fin.get("class"), "tier": fin["tier"],
-                                      "seconds": r["seconds"],
+                                      "seconds": r["seconds"], "shap_model": key, "shap_seconds": xp["seconds"],
+                                      "shap_players": len(xp["players"]),
                                       "tier1_top": r["tier1"]["stage2"]["top"], "tier1_zone": r["tier1"]["stage2"]["zone"],
                                       "p_aac_tier1": round(r["tier1"]["stage1"]["p_display"], 3),
                                       "score_aac_tier1": round(r["tier1"]["stage1"]["score"], 3),
                                       "top_score_tier1": round(r["tier1"]["stage2"]["top_score"], 3)}
         print(f"{name:8s} {variant:16s} -> tier {fin['tier']} {fin['rule']:5s} {str(fin.get('class')):8s} "
-              f"(Tier 1 top {r['tier1']['stage2']['top']} {r['tier1']['stage2']['zone']}, {r['seconds']} s)", flush=True)
+              f"(Tier 1 top {r['tier1']['stage2']['top']} {r['tier1']['stage2']['zone']}, {r['seconds']} s; "
+              f"SHAP {key} {xp['seconds']} s)", flush=True)
 summary = {"backend": eng.backend, "model": eng.model_label, "locked_on": eng.locked_on,
            "fit_seconds": eng.load_seconds, "threads": os.environ["OMP_NUM_THREADS"],
            "max_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6, 2),
            "model_cache": os.environ.get("TABPFN_MODEL_CACHE_SIZE"),
            "median_run_seconds": float(np.median([v["seconds"] for v in out.values()])),
+           "median_shap_seconds": float(np.median([v["shap_seconds"] for v in out.values()])),
            "total_seconds": round(time.time() - t0, 1), "fit_mode": os.environ.get("CDS_FIT_MODE", "default"),
            "cases": out}
 print(json.dumps({k: v for k, v in summary.items() if k != "cases"}))

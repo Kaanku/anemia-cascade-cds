@@ -29,7 +29,9 @@ Backends: "tabpfn" (default; needs the TabPFN-3.5 weights, TABPFN_TOKEN) or "pro
 
 from __future__ import annotations
 
+import itertools
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -62,6 +64,9 @@ CLASS_LABEL = {"IDA": "Iron deficiency anaemia", "HA": "Haemolytic anaemia",
                "HGB_HTZ": "Heterozygous haemoglobinopathy", "NORMAL": "Normal red cell profile",
                "OAC": "Anaemia of another cause"}
 RULE_CLASS = {"IDA": "IDA", "HA": "HA", "HGB_HTZ": "HGB HTZ", "NORMAL": "Normal"}
+DERIVED = {"micro_macro_ratio": ("micro_r_pct", "macro_r_pct"),          # inputs the app computes (complete())
+           "nrbc_number_10_3_u_l": ("nrbc_pct", "wbc_10_3_u_l")}
+SHAP_BUDGET = int(os.environ.get("CDS_SHAP_BUDGET", "512"))             # coalitions per explanation
 
 
 # ───────────────────────────────────────────────────────────── features (as s04)
@@ -145,6 +150,94 @@ def aps_set(P: np.ndarray, qhat: float) -> list[int]:
     return keep or [int(order[0])]
 
 
+# ───────────────────────────────────────────────────────────── explanation (KernelSHAP)
+def kernel_design(p: int, budget: int, seed: int = SEED) -> tuple[np.ndarray, np.ndarray]:
+    """Coalitions (n × p, 0/1) and regression weights of KernelSHAP (Lundberg and Lee, 2017), drawn as in the
+    reference implementation (shap.KernelExplainer): coalition sizes are enumerated completely from the outside
+    in (1 and p − 1, then 2 and p − 2, …) while the budget covers a size's share of the Shapley kernel; the
+    remaining sizes are sampled in complementary pairs with probability proportional to the kernel, and the
+    weights of the sampled coalitions are rescaled to the kernel mass left. With budget ≥ 2^p − 2 every
+    coalition is used and the result is the exact Shapley value."""
+    if p < 2:
+        return np.zeros((0, p), np.int8), np.zeros(0)
+    if 2 ** p - 2 <= budget:                                              # exact: every proper coalition
+        Z = ((np.arange(1, 2 ** p - 1)[:, None] >> np.arange(p)) & 1).astype(np.int8)
+        s = Z.sum(1)
+        return Z, np.array([(p - 1) / (math.comb(p, int(k)) * k * (p - k)) for k in s])
+    rng = np.random.default_rng(seed)
+    n_sizes, n_paired = math.ceil((p - 1) / 2), (p - 1) // 2
+    sizes = np.arange(1, n_sizes + 1)
+    kw = (p - 1) / (sizes * (p - sizes))
+    kw[:n_paired] *= 2                                                    # a size and its complement
+    kw /= kw.sum()
+    Z, w, left, rem, n_full = [], [], budget, kw.copy(), 0
+    for i, s in enumerate(sizes):                                         # complete sizes, outside in
+        paired = i < n_paired
+        n_sub = math.comb(p, int(s)) * (2 if paired else 1)
+        if left * rem[i] / n_sub < 1 - 1e-8:
+            break
+        n_full, left = n_full + 1, left - n_sub
+        if rem[i] < 1:
+            rem = rem / (1 - rem[i])
+        wi = kw[i] / math.comb(p, int(s)) / (2 if paired else 1)
+        for idx in itertools.combinations(range(p), int(s)):
+            z = np.zeros(p, np.int8)
+            z[list(idx)] = 1
+            Z.append(z)
+            w.append(wi)
+            if paired:
+                Z.append(1 - z)
+                w.append(wi)
+    n_fixed = len(Z)
+    if n_full < n_sizes and left > 0:                                    # sample the rest in pairs
+        prob = kw[n_full:].copy()
+        prob[: max(0, n_paired - n_full)] /= 2
+        prob /= prob.sum()
+        seen: dict[bytes, int] = {}
+        for d in rng.choice(len(prob), size=4 * left, p=prob):
+            if left <= 0:
+                break
+            s = int(d) + n_full + 1
+            z = np.zeros(p, np.int8)
+            z[rng.permutation(p)[:s]] = 1
+            t = z.tobytes()
+            if t in seen:                                                 # repeated draw: add weight
+                w[seen[t]] += 1.0
+                if s <= n_paired:
+                    w[seen[t] + 1] += 1.0
+                continue
+            seen[t] = len(Z)
+            Z.append(z)
+            w.append(1.0)
+            left -= 1
+            if left > 0 and s <= n_paired:
+                Z.append(1 - z)
+                w.append(1.0)
+                left -= 1
+        w = np.asarray(w, float)
+        w[n_fixed:] *= kw[n_full:].sum() / w[n_fixed:].sum()
+    return np.asarray(Z, np.int8), np.asarray(w, float)
+
+
+def shapley_regression(Z: np.ndarray, w: np.ndarray, Y: np.ndarray, f_ref: np.ndarray,
+                       f_x: np.ndarray) -> np.ndarray:
+    """Constrained weighted least squares of KernelSHAP: minimise Σ w (Y − f_ref − Zφ)² subject to
+    Σφ = f_x − f_ref (efficiency), with the last player eliminated. Y: n × k outputs of the coalitions;
+    returns φ, p × k."""
+    total = np.asarray(f_x, float) - np.asarray(f_ref, float)
+    p = Z.shape[1]
+    if p == 0:
+        return np.zeros((0, len(total)))
+    if p == 1:
+        return total[None, :]
+    Zf = Z.astype(float)
+    A = Zf[:, :-1] - Zf[:, -1:]
+    b = Y - f_ref - Zf[:, -1:] * total
+    sw = np.sqrt(w)[:, None]
+    head = np.linalg.lstsq(A * sw, b * sw, rcond=None)[0]
+    return np.vstack([head, total - head.sum(0)])
+
+
 # ───────────────────────────────────────────────────────────── models
 class ProxyModel:
     """Interface test only: gradient boosting in place of TabPFN-3.5."""
@@ -196,7 +289,7 @@ class Cascade:
         bio_rows = syn[syn[BIO].notna().any(axis=1)]
         self.imputer = Imputer(bio_rows)
         mats = {"CBC": add_ratios(syn, "CBC"), "CBC_BIO": add_ratios(self.imputer.transform(bio_rows), "CBC_BIO")}
-        self.models = {}
+        self.models, self.reference = {}, {}
         for key, cfg in CONFIGS.items():
             sc, st = ("CBC_BIO" if key.startswith("bio") else "CBC"), cfg[-2:]          # "S1" / "S2"
             d = mats[sc] if st == "S1" else mats[sc][mats[sc]["cls"].isin(AAC)]
@@ -206,6 +299,8 @@ class Cascade:
             classes = [str(c) for c in m.classes_]
             assert classes == (["0", "1"] if st == "S1" else S2_CLASSES), (cfg, classes)
             self.models[key] = m
+            ref = d[self.inputs(key)].astype(float).median()       # SHAP reference: the median training record
+            self.reference[key] = self._derive(ref.to_frame().T).iloc[0]
         self.n_train = {"synthetic_patients": len(syn), "with_biochemistry": len(bio_rows)}
         self.load_seconds = round(time.time() - t0, 1)
 
@@ -231,6 +326,19 @@ class Cascade:
 
     def _row(self, x: dict) -> pd.DataFrame:
         return pd.DataFrame([{c: (np.nan if x.get(c) is None else float(x[c])) for c in CBC_BASE + EXTRA + BIO}])
+
+    @staticmethod
+    def inputs(key: str) -> list[str]:
+        """The inputs a model sees before the ratio features: the CBC inputs, plus the analytes at Tier 2."""
+        return CBC_BASE + EXTRA + (BIO if key.startswith("bio") else [])
+
+    @staticmethod
+    def _derive(df: pd.DataFrame) -> pd.DataFrame:
+        """Inputs the app computes from others (MicroR/MacroR, NRBC#), recomputed from their sources."""
+        df = df.copy()
+        df["micro_macro_ratio"] = df["micro_r_pct"] / df["macro_r_pct"]
+        df["nrbc_number_10_3_u_l"] = df["nrbc_pct"] * df["wbc_10_3_u_l"] / 100
+        return df
 
     def _predict(self, key: str, d: pd.DataFrame) -> np.ndarray:
         return self.models[key].predict_proba(d[self.features[CONFIGS[key]]].to_numpy(float))[0]
@@ -299,3 +407,56 @@ class Cascade:
 
     def run(self, x: dict) -> dict:
         return self.finish(self.start(x))
+
+    # ── explanation ───────────────────────────────────────────────
+    def explain(self, res: dict, key: str, budget: int | None = None, seed: int = SEED) -> dict:
+        """Shapley values of one model's raw output for the patient of a cascade result (KernelSHAP).
+
+        Players are the values the model receives: the CBC inputs and, at Tier 2, the four analytes (imputed ones
+        flagged). Ratio features follow their two values, and MicroR/MacroR and NRBC# follow their sources. A value
+        outside a coalition takes the reference value, the median of the model's synthetic training records.
+        Fields left empty stay empty, and a value equal to the reference cannot contribute, so neither is a
+        player. All coalitions go to the model in one batched call (CDS_SHAP_CHUNK rows at a time if set). The
+        values add up to f(patient) − f(reference); Stage 1 explains the probability of a classifiable cause,
+        Stage 2 the four class probabilities."""
+        t0 = time.time()
+        budget = int(budget or SHAP_BUDGET)
+        cols = self.inputs(key)
+        row = self._row(res["inputs"])
+        if key.startswith("bio"):
+            row = self.imputer.transform(row)
+        xv = row[cols].iloc[0].astype(float)
+        ref = self.reference[key].reindex(cols).astype(float)
+        empty = [c for c in cols if not np.isfinite(xv[c])]
+        cand = [c for c in cols if c not in DERIVED and np.isfinite(xv[c])]
+        players = [c for c in cand if not np.isclose(xv[c], ref[c], rtol=0, atol=1e-12)]
+        p = len(players)
+        Z, w = kernel_design(p, budget, seed)
+        M = np.vstack([np.zeros((1, p), np.int8), np.ones((1, p), np.int8), Z])   # reference, patient, coalitions
+        R = np.repeat(ref.to_numpy(float)[None, :], len(M), axis=0)
+        R[:, [cols.index(c) for c in empty]] = np.nan
+        idx = [cols.index(c) for c in players]
+        R[:, idx] = np.where(M == 1, xv.to_numpy(float)[idx][None, :], R[:, idx])
+        rows = self._derive(pd.DataFrame(R, columns=cols))
+        for c, src in DERIVED.items():                       # the patient's own value when its sources are his
+            same = np.logical_and.reduce([np.isclose(rows[s].to_numpy(float), xv[s], equal_nan=True) for s in src])
+            rows.loc[same, c] = xv[c]
+        F = add_ratios(rows, "CBC_BIO" if key.startswith("bio") else "CBC")[self.features[CONFIGS[key]]].to_numpy(float)
+        chunk = int(os.environ.get("CDS_SHAP_CHUNK", "0")) or len(F)
+        P = np.vstack([self.models[key].predict_proba(F[i:i + chunk]) for i in range(0, len(F), chunk)])
+        Y = P[:, [1]] if key.endswith("s1") else P
+        phi = shapley_regression(Z, w, Y[2:], Y[0], Y[1])
+        tier = res.get("tier1" if key.startswith("cbc") else "tier2", {})
+        if key.endswith("s1"):
+            done = [tier["stage1"]["score"]] if tier else None
+        else:
+            done = [tier["stage2"]["probs"][c] for c in S2_CLASSES] if tier else None
+        return {"model": key, "classes": ["AAC"] if key.endswith("s1") else list(S2_CLASSES),
+                "players": players, "value": [float(xv[c]) for c in players],
+                "reference": [float(ref[c]) for c in players],
+                "imputed": [bool(row[f"imputed_{c}"].iloc[0]) if f"imputed_{c}" in row else False for c in players],
+                "phi": phi.tolist(), "f_x": Y[1].tolist(), "f_ref": Y[0].tolist(),
+                "check_vs_cascade": None if done is None else float(np.max(np.abs(np.asarray(done) - Y[1]))),
+                "n_coalitions": int(len(Z)), "exact": bool(p < 2 or len(Z) == 2 ** p - 2), "budget": budget,
+                "empty": [c for c in empty if c not in DERIVED], "at_reference": [c for c in cand if c not in players],
+                "seconds": round(time.time() - t0, 1)}

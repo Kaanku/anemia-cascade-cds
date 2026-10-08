@@ -8,13 +8,16 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
+import altair as alt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))      # engine.py next to this file, whatever the cwd
-from engine import BIO, CLASS_LABEL, DATA, S2_CLASSES, Cascade  # noqa: E402
+from engine import BIO, CLASS_LABEL, DATA, S2_CLASSES, SHAP_BUDGET, Cascade  # noqa: E402
 
 st.set_page_config(page_title="Anaemia cascade demo", page_icon="🩸", layout="wide")
 try:                                                    # licence key from the host's secrets (never in the code)
@@ -72,6 +75,11 @@ GROUPS = {"core": "Thesis parameters (required)", "red": "Red cell and reticuloc
 ZONE_TEXT = {"HIGH": "high confidence", "MEDIUM": "medium confidence", "LOW": "low confidence"}
 URGENCY = {"none": "—", "routine": "routine", "priority": "priority", "urgent": "urgent"}
 SHORT = {"IDA": "IDA", "HA": "HA", "HGB_HTZ": "HGB HTZ", "NORMAL": "Normal", "OAC": "OAC"}
+MODEL_NAME = {"cbc_s1": "Tier 1 · Stage 1 (classifiable cause or not)", "cbc_s2": "Tier 1 · Stage 2 (which class)",
+              "bio_s1": "Tier 2 · Stage 1 (classifiable cause or not)", "bio_s2": "Tier 2 · Stage 2 (which class)"}
+INFO = {f[0]: (f[1], f[2], f[5]) for f in FIELDS}             # key → label, unit, factor input/feature
+SHAP_COLOURS = ("#C0392B", "#4F72B8", "#9AA0A6")              # raises, lowers, the other values
+SHAP_TIME = os.environ.get("CDS_SHAP_TIME", "about 20 s")      # on a 2-core CPU (measured, see README)
 
 
 @st.cache_resource(show_spinner="Fitting the four models on the synthetic training set (first start only)…")
@@ -182,6 +190,87 @@ def show_result(res: dict):
     st.caption(f"Computed in {res['seconds']} s on CPU.")
 
 
+def deciding_model(res: dict) -> str:
+    """The model whose output set the final result."""
+    fin = res["final"]
+    if fin["tier"] == 2:
+        return "bio_s1" if fin["rule"] == "T2-5" else "bio_s2"
+    return "cbc_s1" if fin["rule"] == "T1-7" else "cbc_s2"
+
+
+def shap_chart(ex: dict, cls: str, top: int = 10):
+    """Diverging bars of the largest Shapley values for one class, the rest summed in one bar."""
+    k = ex["classes"].index(cls)
+    phi = np.asarray(ex["phi"], float)[:, k] if ex["phi"] else np.zeros(0)
+    order = np.argsort(-np.abs(phi), kind="stable")
+    target = "a classifiable cause" if cls == "AAC" else SHORT[cls]
+    kinds = (f"raises P({target})", f"lowers P({target})", "sum of the other values")
+    rows = []
+    for j in order[:top]:
+        label, unit, factor = INFO.get(ex["players"][j], (ex["players"][j], "", 1))
+        rows.append({"value": f"{label} = {ex['value'][j] * factor:.4g} {unit}".strip()
+                              + (" (imputed)" if ex["imputed"][j] else ""),
+                     "reference": f"{ex['reference'][j] * factor:.4g} {unit}".strip(),
+                     "shap": float(phi[j]), "kind": kinds[0] if phi[j] >= 0 else kinds[1]})
+    if len(order) > top:
+        rest = order[top:]
+        rows.append({"value": f"{len(rest)} other values", "reference": "—", "shap": float(phi[rest].sum()),
+                     "kind": kinds[2]})
+    df = pd.DataFrame(rows)
+    df["text"] = df["shap"].map(lambda v: f"{v:+.3f}".replace("-", "−"))
+    lo, hi = min(0.0, df["shap"].min()), max(0.0, df["shap"].max())
+    pad = 0.22 * (hi - lo or 1.0)
+    x = alt.X("shap:Q", title=f"SHAP value (change in the probability of {target})",
+              scale=alt.Scale(domain=[lo - (pad if lo < 0 else 0), hi + (pad if hi > 0 else 0)]))
+    y = alt.Y("value:N", sort=list(df["value"]), title=None, axis=alt.Axis(labelLimit=260))
+    bars = alt.Chart(df).mark_bar(cornerRadius=2).encode(
+        x=x, y=y, color=alt.Color("kind:N", scale=alt.Scale(domain=list(kinds), range=list(SHAP_COLOURS)),
+                                  legend=alt.Legend(title=None, orient="bottom")),
+        tooltip=[alt.Tooltip("value:N", title="Value"), alt.Tooltip("reference:N", title="Reference"),
+                 alt.Tooltip("shap:Q", title="SHAP value", format="+.3f")])
+    pos = alt.Chart(df[df["shap"] >= 0]).mark_text(align="left", dx=3).encode(x=x, y=y, text="text:N")
+    neg = alt.Chart(df[df["shap"] < 0]).mark_text(align="right", dx=-3).encode(x=x, y=y, text="text:N")
+    zero = alt.Chart(pd.DataFrame({"z": [0.0]})).mark_rule(color="#888888").encode(x="z:Q")
+    st.altair_chart((bars + pos + neg + zero).properties(height=26 * len(df) + 40), use_container_width=True)
+    f_x, f_ref = ex["f_x"][k], ex["f_ref"][k]
+    how = "exact Shapley values" if ex["exact"] else f"KernelSHAP, {ex['n_coalitions']} coalitions"
+    st.caption(f"Model output for this patient {f_x:.3f}; for the reference record {f_ref:.3f}. The bars, the last "
+               f"one included, add up to the difference ({f_x - f_ref:+.3f}). The reference record holds the median "
+               "of each value in this model's synthetic training set: a value left out of a coalition takes its "
+               "reference value, ratio features are recomputed from their two values, and fields left empty stay "
+               f"empty ({how}; {ex['seconds']} s). The values explain the raw model output, which is compared with "
+               "the threshold and the HIGH cut-off, not the calibrated probability shown above, and they describe "
+               "this demo model, trained on synthetic data, not the study model.")
+
+
+def shap_section(res: dict):
+    """On-demand Shapley values for one model of the cascade (default: the model that set the result)."""
+    st.markdown("##### Which values drove the result (SHAP)")
+    keys = ["cbc_s1", "cbc_s2"] + (["bio_s1", "bio_s2"] if "tier2" in res else [])
+    default = deciding_model(res)
+    key = st.selectbox("Model", keys, index=keys.index(default) if default in keys else 1,
+                       format_func=MODEL_NAME.get, key="shap_model")
+    tier = res["tier1"] if key.startswith("cbc") else res["tier2"]
+    if key.endswith("s2"):
+        cls = st.selectbox("Class", S2_CLASSES, index=S2_CLASSES.index(tier["stage2"]["top"]),
+                           format_func=CLASS_LABEL.get, key="shap_class")
+    else:
+        cls = "AAC"
+    cache = st.session_state.setdefault("shap", {})
+    ck = (res.get("run_id"), key)
+    if ck not in cache:
+        if not st.button("Compute SHAP explanation", key="shap_button"):
+            st.caption(f"Shapley values of the entered values for this model; {SHAP_TIME} on the free server.")
+            return
+        with st.spinner(f"Computing SHAP values ({SHAP_BUDGET} coalitions; {SHAP_TIME})…"):
+            try:
+                cache[ck] = eng.explain(res, key)
+            except Exception as e:                                         # e.g. memory on a small host
+                st.warning(f"The SHAP values could not be computed: {type(e).__name__}: {e}")
+                return
+    shap_chart(cache[ck], cls)
+
+
 
 # ───────────────────────────────────────────────────────────── page
 st.title("Two-tier anaemia cascade · research demo")
@@ -233,13 +322,18 @@ with right:
                     res = eng.finish(res)
         else:
             res = eng.finish(res)
+        res["run_id"] = time.time_ns()
         st.session_state["result"] = res
+        for k in ("shap", "shap_model", "shap_class"):            # a new case: SHAP starts from its defaults
+            st.session_state.pop(k, None)
     res = st.session_state.get("result")
     with result_box.container():
         if res is None:
             st.info("Load a synthetic example from the sidebar or type a full blood count, then run the cascade.")
         else:
             show_result(res)
+    if res is not None and res["ok"]:
+        shap_section(res)
 with st.expander("About this demo"):
     st.markdown(
         "**Cascade.** Tier 1 uses the full blood count only. Stage 1 separates anaemias with a classifiable cause "

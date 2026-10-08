@@ -53,6 +53,31 @@ Checks before release (holdout design, generator fitted on a random half, five r
 * **Utility:** models trained on synthetic data and tested on real patients reached the AUCs of models trained
   on real data (e.g. Stage 2 CBC 0.830 vs 0.833).
 
+## Explanations (SHAP)
+
+Under the result, **Compute SHAP explanation** shows which entered values moved the output of one model. The
+default is the model that set the result; any model that ran can be chosen, and for Stage 2 any of the four
+classes.
+
+* **Players** are the values the model receives: age and the 35 blood count fields and, at Tier 2, the four
+  analytes (imputed analytes are marked). Ratio features are recomputed from their two values, and MicroR/MacroR and NRBC# from
+  their sources, so the effect of a ratio is shared by the values it is made of. Fields left empty stay empty
+  and are not players.
+* **Reference:** a value left out of a coalition takes the median of that model's synthetic training records.
+  The values add up to the model output for the patient minus the output for this reference record. The chart
+  shows the ten largest and the sum of the others.
+* **Estimator:** KernelSHAP (Lundberg and Lee, 2017) with the sampling scheme of the `shap` package (complete
+  coalition sizes from the outside in, then complementary pairs) and the efficiency constraint. The 512
+  coalitions (`CDS_SHAP_BUDGET`) go to the model in one batched call. The code is in `engine.py` and needs no
+  extra package. With at least 2^p − 2 coalitions it returns exact Shapley values; `test_kernel_shap.py`
+  checks this against brute-force enumeration.
+* **Cost and accuracy** (Colab CPU, 2 threads, TabPFN-3.5-fast with 2 ensemble members, `time_app.py`): 14–17 s
+  per explanation and about 2.3 GB peak memory. Against a 4,096-coalition reference, 9 of the 10 largest values
+  were the same in both examples tested, and the largest absolute difference was 0.03.
+* The values explain the raw model output (the score compared with the threshold and the HIGH cut-off), not
+  the calibrated probability on display, and they describe this demo model, not the study model. The study's
+  own SHAP analysis worked on the model features, with marginal imputation over 20 background patients.
+
 ## Performance on real patients
 
 | Measure | Development (cross-generation) | Temporal (this app's models) |
@@ -74,8 +99,10 @@ The cascade rows count patients with the biochemistry panel measured. The full t
 | File | Content |
 |---|---|
 | `streamlit_app.py` | Streamlit interface |
-| `engine.py` | features, imputation, models, locked decisions, cascade |
+| `engine.py` | features, imputation, models, locked decisions, cascade, SHAP explanations |
 | `app_selftest.py` | end-to-end check with the real backend (timings, memory) |
+| `time_app.py` | CPU timing of batched predictions and SHAP explanations, agreement with a larger budget |
+| `test_kernel_shap.py` | KernelSHAP against exact Shapley values (no model needed) |
 | `data/synthetic_cohort.parquet` | synthetic training records |
 | `data/features.json` | feature list of each model |
 | `data/lock.json` | thresholds, HIGH cut-offs, conformal quantiles, calibration |
@@ -98,7 +125,8 @@ On first start the app downloads the TabPFN-3.5-fast weights and fits the four m
 Create an app from this repository with `app/streamlit_app.py` as the main file. Add the secret
 `TABPFN_TOKEN = "<your Prior Labs key>"` under the app's settings. `requirements.txt` in the repository root
 installs the CPU build of PyTorch. The four stages share one TabPFN model in memory (`TABPFN_MODEL_CACHE_SIZE=1`),
-which keeps the app at about 1.9 GB, within the platform's 2.7 GB limit.
+which keeps the app at about 1.9 GB, and about 2.3 GB while a SHAP explanation runs, within the platform's
+2.7 GB limit.
 
 ## Licences
 

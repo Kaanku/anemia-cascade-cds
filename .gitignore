@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local outputs of the app checks and the study
+app/selftest_result.json
+app/timing_result.json
+private/
