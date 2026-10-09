@@ -69,7 +69,7 @@ FIELDS = [
     ("uibc", "UIBC", "µg/dL", "bio", 1.0, 1, False),
     ("ldh", "LDH", "U/L", "bio", 1.0, 1, False),
 ]
-GROUPS = {"core": "Thesis parameters (required)", "red": "Red cell and reticulocyte indices",
+GROUPS = {"core": "Required inputs", "red": "Red cell and reticulocyte indices",
           "white": "White cells and platelets", "research": "Research parameters",
           "bio": "Biochemistry panel (Tier 2; optional)"}
 ZONE_TEXT = {"HIGH": "high confidence", "MEDIUM": "medium confidence", "LOW": "low confidence"}
@@ -220,18 +220,19 @@ def shap_chart(ex: dict, cls: str, top: int = 10):
     df["text"] = df["shap"].map(lambda v: f"{v:+.3f}".replace("-", "−"))
     lo, hi = min(0.0, df["shap"].min()), max(0.0, df["shap"].max())
     pad = 0.22 * (hi - lo or 1.0)
-    x = alt.X("shap:Q", title=f"SHAP value (change in the probability of {target})",
+    x = alt.X("shap:Q", title=["SHAP value", f"(change in the probability of {target})"],
               scale=alt.Scale(domain=[lo - (pad if lo < 0 else 0), hi + (pad if hi > 0 else 0)]))
-    y = alt.Y("value:N", sort=list(df["value"]), title=None, axis=alt.Axis(labelLimit=260))
+    # every bar keeps its label in a narrow column: fixed row height, no label thinning
+    y = alt.Y("value:N", sort=list(df["value"]), title=None, axis=alt.Axis(labelLimit=260, labelOverlap=False))
     bars = alt.Chart(df).mark_bar(cornerRadius=2).encode(
         x=x, y=y, color=alt.Color("kind:N", scale=alt.Scale(domain=list(kinds), range=list(SHAP_COLOURS)),
-                                  legend=alt.Legend(title=None, orient="bottom")),
+                                  legend=alt.Legend(title=None, orient="bottom", direction="vertical")),
         tooltip=[alt.Tooltip("value:N", title="Value"), alt.Tooltip("reference:N", title="Reference"),
                  alt.Tooltip("shap:Q", title="SHAP value", format="+.3f")])
     pos = alt.Chart(df[df["shap"] >= 0]).mark_text(align="left", dx=3).encode(x=x, y=y, text="text:N")
     neg = alt.Chart(df[df["shap"] < 0]).mark_text(align="right", dx=-3).encode(x=x, y=y, text="text:N")
     zero = alt.Chart(pd.DataFrame({"z": [0.0]})).mark_rule(color="#888888").encode(x="z:Q")
-    st.altair_chart((bars + pos + neg + zero).properties(height=26 * len(df) + 40), use_container_width=True)
+    st.altair_chart((bars + pos + neg + zero).properties(height=alt.Step(24)), use_container_width=True)
     f_x, f_ref = ex["f_x"][k], ex["f_ref"][k]
     how = "exact Shapley values" if ex["exact"] else f"KernelSHAP, {ex['n_coalitions']} coalitions"
     st.caption(f"Model output for this patient {f_x:.3f}; for the reference record {f_ref:.3f}. The bars, the last "

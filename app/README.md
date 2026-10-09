@@ -1,7 +1,7 @@
 # Two-tier anaemia cascade · research demo
 
 Interactive demonstration of the two-tier clinical decision support cascade of our study on the differential
-diagnosis of acquired and hereditary erythrocyte disorders (manuscript under review).
+diagnosis of acquired and hereditary erythrocyte disorders (manuscript in preparation).
 
 > **Research use only. Not a medical device.** The models in this app are trained on synthetic data; their
 > outputs are not those of the study model and must not be used for patient care.

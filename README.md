@@ -1,8 +1,10 @@
 # anemia-cascade-cds
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21049013.svg)](https://doi.org/10.5281/zenodo.21049013)
+
 Two-tier cascade clinical decision support for the differential diagnosis of anaemia from the full blood count
-and reticulocyte panel (Sysmex XN), with a first-line biochemistry panel as the second tier. Associated
-manuscript under review.
+and reticulocyte panel (Sysmex XN), with a first-line biochemistry panel as the second tier. The associated
+manuscript is in preparation.
 
 > **Research use only. Not a medical device.**
 
@@ -31,6 +33,14 @@ manuscript under review.
 Patient data are not shared (ethics approval). The analysis code is in `analysis/`; it runs on the original
 data only. The demo is trained on synthetic data only; the synthetic cohort, its generation and its privacy,
 fidelity and utility checks are described in `app/README.md`.
+
+## Citation
+
+K. Kuzu, D.İ. Topcu, S. Demiral Sezer, G. Bozkaya, anemia-cascade-cds: two-tier cascade clinical decision
+support for anemia [software], Zenodo, 2026. <https://doi.org/10.5281/zenodo.21049013>
+
+This DOI always resolves to the latest release; each release also has its own DOI (v2.0.0:
+<https://doi.org/10.5281/zenodo.23259392>).
 
 ## Running the demo
 
