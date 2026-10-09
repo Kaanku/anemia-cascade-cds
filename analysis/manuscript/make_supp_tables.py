@@ -681,6 +681,10 @@ def shap_ready():
 
 if shap_ready():
     TOP = 5
+    JOBS = [json.loads(p.read_text()) for p in sorted((O / "runs_shap35").glob("*.json"))]   # s11 job records
+    assert len(JOBS) == 30, f"{len(JOBS)} SHAP job records"
+    REFIT = max(j["check"]["max_abs_diff_vs_s05c"] for j in JOBS)
+    GAP = max(j["efficiency_gap_max"] for j in JOBS)
     rows_a = []
     for cfg, lab, classes in SHAP_CFGS:
         G = pd.read_csv(SHAP / f"{cfg}_global.csv", dtype={"explained_class": str})
@@ -696,8 +700,11 @@ if shap_ready():
         GR = pd.read_csv(SHAP / f"{cfg}_groups.csv", dtype={"explained_class": str})
         for c in classes:
             x = GR[GR.explained_class == c]
-            bio = x[x.group.isin(["Biochemistry", "Ratios with biochemistry"])].mean_abs_phi.sum()
-            rows_b.append([lab, {"1": "AAC"}.get(c, LAB.get(c, c)), f"{fr(100 * bio / x.mean_abs_phi.sum(), 1)}"])
+            tot = x.mean_abs_phi.sum()
+            ana = x[x.group == "Biochemistry"].mean_abs_phi.sum()
+            rat = x[x.group == "Ratios with biochemistry"].mean_abs_phi.sum()
+            rows_b.append([lab, {"1": "AAC"}.get(c, LAB.get(c, c)), fr(100 * ana / tot, 1), fr(100 * rat / tot, 1),
+                           fr(100 * (ana + rat) / tot, 1)])
     rows_c = []
     for cfg, lab, classes in SHAP_CFGS:
         ST = pd.read_csv(SHAP / f"{cfg}_stability.csv", dtype={"explained_class": str})
@@ -711,25 +718,32 @@ if shap_ready():
     add("S15", "Table S15. Shapley values of the outer-fold models (nested cross-validation).", None, None, [
         "Shapley values on the probability scale (shapiq, marginal imputation from 20 background training patients, "
         "OddSHAP estimator); each outer-fold model explained its own outer-fold patients, and the five folds were pooled. "
-        "Mean |φ|, mean absolute Shapley value with a patient bootstrap 95% CI. ρ, Spearman correlation between the "
-        "feature value and its Shapley value (positive: higher values push towards the explained class). Folds: outer "
-        "folds whose feature selection retained the feature. Panel B: share of the total mean |φ| carried by the four "
-        "analytes and the ratios that contain them. Panel C: agreement of the importance rankings between pairs of outer "
-        "folds and between nested cross-validation and the temporal cohort (final models).",
+        f"Each model was refitted for the explanations and reproduced the evaluated predictions (maximum absolute "
+        f"difference {fr(REFIT, 3)}), and the Shapley values of each patient summed to the model output minus the base "
+        f"value (maximum gap {fr(GAP, 4)}). "
+        "Mean |φ|, mean absolute Shapley value with a patient bootstrap 95% CI (2,000 resamples). ρ, Spearman "
+        "correlation between the "
+        "feature value and its Shapley value (positive: higher values push toward the explained class). Folds: outer "
+        "folds whose feature selection retained the feature. Panel B: importance of a feature group (mean over patients "
+        "of the absolute sum of the Shapley values of its features) as a percentage of the summed importance of all "
+        "groups, for the four analytes and for the ratios that contain an analyte. Panel C: Spearman correlation of the "
+        "feature importances (mean |φ|) between pairs of outer folds and between nested cross-validation and the "
+        "temporal cohort (final models, 97 patients; 49 for IDA vs HGB HTZ).",
         "AAC, associated anemia causes; HA, hemolytic anemia; HGB HTZ, heterozygous hemoglobinopathy; IDA, iron deficiency "
         "anemia. Feature abbreviations as in Supplementary Table S3; A/B denotes a ratio."], panels=[
-        {"label": f"A. The {TOP} features with the largest mean |φ| per model and explained class",
+        {"label": f"A. The {['', 'one', 'two', 'three', 'four', 'five'][TOP]} features with the largest mean |φ| per "
+                  "model and explained class",
          "header": ["Model", "Explained class", "Rank", "Feature", "Mean |φ| (95% CI)", "ρ", "Folds"], "rows": rows_a},
-        {"label": "B. Share of the attributions carried by biochemistry", "header": ["Model", "Explained class", "Share, %"],
-         "rows": rows_b},
+        {"label": "B. Share of the attributions carried by biochemistry",
+         "header": ["Model", "Explained class", "Analytes, %", "Ratios with an analyte, %", "Total, %"], "rows": rows_b},
         {"label": "C. Stability of the importance rankings", "header": ["Model", "Explained class",
                                                                         "Spearman between folds, median (range)",
                                                                         "Spearman, nested CV vs temporal"], "rows": rows_c}],
         landscape=True)
 else:
     add("S15", "Table S15. Shapley values of the outer-fold models: the most important features per model and class.",
-        ["Model", "Rank", "Feature", "Mean |φ|", "Direction"], [["[PENDING: filled from s12 after the remaining Shapley jobs]", "", "", "", ""]],
-        ["[PENDING]"])
+        ["Model", "Rank", "Feature", "Mean |φ|", "Direction"],
+        [["[not available: run s11_shap.py and s12_shap_summary.py first]", "", "", "", ""]], [""])
     tables[-1]["pending"] = True
 
 # ═════════════════════════════════════════ S16 A2 and T13
@@ -878,7 +892,7 @@ if (SEC / "secondary_set.csv").exists():
 else:
     add("S19", "Table S19. The frozen final models applied to the secondary set (59 patients outside the four target classes).",
         ["Category", "n", "Stage 1 OAC", "Stage 1 AAC", "Stage 2 HIGH zone", "Finalized at Tier 1"],
-        [["[PENDING: filled from s20 after the Colab run]", "", "", "", "", ""]], ["[PENDING]"])
+        [["[not available: run s20_secondary.py first]", "", "", "", "", ""]], [""])
     tables[-1]["pending"] = True
 
 ids = [int(t["id"][1:]) for t in tables]
@@ -891,8 +905,9 @@ def to_md(t):
     for p in t["panels"]:
         if p["label"]:
             out += [f"*{p['label']}*", ""]
-        out += ["| " + " | ".join(p["header"]) + " |", "|" + "---|" * len(p["header"])]
-        out += ["| " + " | ".join(r) + " |" for r in p["rows"]] + [""]
+        esc = lambda cells: [str(c).replace("|", "\\|") for c in cells]       # "|φ|" must not split a Markdown cell
+        out += ["| " + " | ".join(esc(p["header"])) + " |", "|" + "---|" * len(p["header"])]
+        out += ["| " + " | ".join(esc(r)) + " |" for r in p["rows"]] + [""]
     return "\n".join(out + t["notes"] + [""])
 
 

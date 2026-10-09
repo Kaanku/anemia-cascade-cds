@@ -340,7 +340,8 @@ def figS2():
 
 def figS3(shap_dir=None, out_name="FigS3_shap"):
     """Shapley values of the CBC models (outer folds pooled): the ten features with the largest mean |phi| per model
-    and explained class; each dot is one patient (up to 300 per feature), coloured by the feature value's percentile."""
+    and explained class; each dot is one patient, coloured by the feature value's percentile among the explained
+    patients (s12 beeswarm data)."""
     import os
     sd = Path(shap_dir or os.environ.get("SHAP_DIR", R / "shap"))
     specs = [("A1_FULL_CBC_S1", "1", "A  Stage 1: AAC"), ("A1_FULL_CBC_MX", "HGB_HTZ", "B  IDA vs HGB HTZ: HGB HTZ"),
@@ -370,7 +371,7 @@ def figS3(shap_dir=None, out_name="FigS3_shap"):
     fig.tight_layout(w_pad=0.6, h_pad=1.0)
     cax = fig.add_axes([0.35, -0.02, 0.3, 0.012])
     cb = fig.colorbar(plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, 1)), cax=cax, orientation="horizontal")
-    cb.set_label("Feature value (percentile within the cohort)", fontsize=6.5); cb.ax.tick_params(labelsize=6)
+    cb.set_label("Feature value (percentile among the explained patients)", fontsize=6.5); cb.ax.tick_params(labelsize=6)
     save(fig, out_name)
 
 
